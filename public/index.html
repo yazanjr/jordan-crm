@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IMG CRM — Login</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --orange:       #F7941D;
+      --orange-dark:  #D97A0D;
+      --orange-dim:   rgba(247,148,29,0.12);
+      --dark:         #1A1A1A;
+      --dark-mid:     #2E2E2E;
+      --text:         #1A1A1A;
+      --text-muted:   #6B7280;
+      --border:       #E5E7EB;
+      --surface:      #FFFFFF;
+      --bg:           #F5F6FA;
+      --green:        #009B48;
+      --red:          #DC2626;
+      --font:         Verdana, Geneva, sans-serif;
+      --radius:       12px;
+    }
+
+    html, body { height: 100%; font-family: var(--font); background: var(--dark); }
+
+    /* ── Background ───────────────────────────────────────────────── */
+    .bg {
+      position: fixed; inset: 0;
+      background:
+        radial-gradient(ellipse 80% 60% at 10% 90%, rgba(247,148,29,0.18) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 50% at 90% 10%, rgba(247,148,29,0.10) 0%, transparent 55%),
+        linear-gradient(145deg, #111111 0%, #1e1e1e 50%, #2a1800 100%);
+    }
+    /* Subtle grain texture */
+    .bg::after {
+      content: '';
+      position: fixed; inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+      opacity: 0.4; pointer-events: none;
+    }
+
+    /* ── Layout ───────────────────────────────────────────────────── */
+    .page {
+      position: relative; z-index: 1;
+      min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+      padding: 24px;
+    }
+
+    .card {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.08);
+      backdrop-filter: blur(24px);
+      border-radius: 20px;
+      padding: 48px 44px;
+      width: 100%; max-width: 420px;
+      box-shadow:
+        0 2px 4px rgba(0,0,0,0.4),
+        0 24px 64px rgba(0,0,0,0.5),
+        inset 0 1px 0 rgba(255,255,255,0.06);
+      animation: slideUp 0.5s cubic-bezier(0.16,1,0.3,1) both;
+    }
+
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(24px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Logo ─────────────────────────────────────────────────────── */
+    .logo-wrap {
+      display: flex; justify-content: center;
+      margin-bottom: 36px;
+    }
+    .logo-box {
+      background: #fff;
+      border-radius: 12px;
+      padding: 12px 20px;
+      display: flex; align-items: center;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    }
+    .logo-box img { height: 40px; display: block; }
+
+    /* ── Heading ──────────────────────────────────────────────────── */
+    .heading {
+      text-align: center;
+      margin-bottom: 8px;
+      color: #fff;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+    .subheading {
+      text-align: center;
+      color: rgba(255,255,255,0.4);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 36px;
+    }
+
+    /* ── Form ─────────────────────────────────────────────────────── */
+    .field { margin-bottom: 18px; }
+    label {
+      display: block;
+      color: rgba(255,255,255,0.5);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    input {
+      width: 100%;
+      padding: 13px 16px;
+      background: rgba(255,255,255,0.05);
+      border: 1.5px solid rgba(255,255,255,0.1);
+      border-radius: 10px;
+      color: #fff;
+      font-family: var(--font);
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+    }
+    input::placeholder { color: rgba(255,255,255,0.2); }
+    input:focus {
+      border-color: var(--orange);
+      background: rgba(247,148,29,0.06);
+      box-shadow: 0 0 0 3px rgba(247,148,29,0.15);
+    }
+
+    /* ── Button ───────────────────────────────────────────────────── */
+    .btn {
+      width: 100%;
+      padding: 14px;
+      margin-top: 8px;
+      background: var(--orange);
+      border: none;
+      border-radius: 10px;
+      color: #fff;
+      font-family: var(--font);
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
+      box-shadow: 0 4px 16px rgba(247,148,29,0.35);
+    }
+    .btn:hover  { background: var(--orange-dark); box-shadow: 0 6px 20px rgba(247,148,29,0.45); }
+    .btn:active { transform: scale(0.98); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* ── Error ────────────────────────────────────────────────────── */
+    .error-msg {
+      background: rgba(220,38,38,0.12);
+      border: 1px solid rgba(220,38,38,0.3);
+      border-radius: 8px;
+      color: #FCA5A5;
+      font-size: 12px;
+      padding: 10px 14px;
+      margin-bottom: 16px;
+      display: none;
+    }
+    .error-msg.show { display: block; }
+
+    /* ── Footer ───────────────────────────────────────────────────── */
+    .footer {
+      text-align: center;
+      margin-top: 32px;
+      color: rgba(255,255,255,0.18);
+      font-size: 11px;
+    }
+    .footer span { color: var(--orange); opacity: 0.7; }
+  </style>
+</head>
+<body>
+  <div class="bg"></div>
+  <div class="page">
+    <div class="card">
+      <div class="logo-wrap">
+        <div class="logo-box">
+          <img src="/assets/logo.jpeg" alt="Izzat Marji Group" />
+        </div>
+      </div>
+
+      <h1 class="heading">Welcome back</h1>
+      <p class="subheading">CRM Portal — Jordan</p>
+
+      <div class="error-msg" id="errorMsg"></div>
+
+      <form id="loginForm">
+        <div class="field">
+          <label for="email">Email address</label>
+          <input type="email" id="email" name="email" placeholder="you@img.com" autocomplete="username" required />
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input type="password" id="password" name="password" placeholder="••••••••" autocomplete="current-password" required />
+        </div>
+        <button class="btn" type="submit" id="loginBtn">Sign in</button>
+      </form>
+
+      <div class="footer">
+        Izzat Marji Group &nbsp;·&nbsp; <span>CRM v1.0</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // If already logged in, redirect
+    if (localStorage.getItem('img_token')) {
+      window.location.href = '/app.html';
+    }
+
+    document.getElementById('loginForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const btn = document.getElementById('loginBtn');
+      const err = document.getElementById('errorMsg');
+      btn.disabled = true;
+      btn.textContent = 'Signing in…';
+      err.classList.remove('show');
+
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email:    document.getElementById('email').value.trim(),
+            password: document.getElementById('password').value,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Login failed.');
+        localStorage.setItem('img_token', data.token);
+        localStorage.setItem('img_user', JSON.stringify(data.user));
+        localStorage.setItem('img_perms', JSON.stringify(data.permissions));
+        window.location.href = '/app.html';
+      } catch (ex) {
+        err.textContent = ex.message;
+        err.classList.add('show');
+        btn.disabled = false;
+        btn.textContent = 'Sign in';
+      }
+    });
+  </script>
+</body>
+</html>

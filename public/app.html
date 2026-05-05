@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IMG CRM</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+
+  <!-- ── Sidebar ───────────────────────────────────────────────────── -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-logo">
+      <div class="sidebar-logo-box">
+        <img src="/assets/logo.jpeg" alt="IMG" />
+      </div>
+    </div>
+    <div class="sidebar-role">
+      <div class="sidebar-role-label">Signed in as</div>
+      <div class="sidebar-user-name" id="sidebarUserName">—</div>
+      <div class="sidebar-role-name" id="sidebarRoleName">—</div>
+    </div>
+    <nav class="sidebar-nav" id="sidebarNav"></nav>
+    <div class="sidebar-bottom">
+      <div class="nav-item imi-link" id="imiLink" style="display:none" onclick="openIMI()">
+        <span class="nav-icon">🔗</span>
+        <span>IMI Portal (Iraq)</span>
+      </div>
+      <div class="nav-item" onclick="logout()" style="color:rgba(255,255,255,0.35)">
+        <span class="nav-icon">↩</span>
+        <span>Sign out</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Topbar ─────────────────────────────────────────────────────── -->
+  <header class="topbar">
+    <div class="topbar-title" id="topbarTitle">Dashboard</div>
+    <div class="topbar-actions">
+      <button class="notif-btn" id="notifBtn" onclick="toggleNotifPanel()" title="Notifications">
+        🔔
+        <span class="notif-badge" id="notifBadge"></span>
+      </button>
+      <div class="user-chip" id="userChip" onclick="toggleUserDropdown()">
+        <div class="user-avatar" id="userAvatar">—</div>
+        <span class="user-chip-name" id="userChipName">—</span>
+        <div class="user-dropdown" id="userDropdown">
+          <div class="user-dd-item" onclick="navigate('change-password')">Change Password</div>
+          <div class="user-dd-divider"></div>
+          <div class="user-dd-item danger" onclick="logout()">Sign out</div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Main ───────────────────────────────────────────────────────── -->
+  <main class="main-content" id="mainContent">
+    <div style="display:flex;align-items:center;justify-content:center;height:200px">
+      <div class="spinner"></div>
+    </div>
+  </main>
+
+  <!-- ── Notifications Panel ────────────────────────────────────────── -->
+  <div class="notif-panel" id="notifPanel">
+    <div class="notif-panel-header">
+      <span class="notif-panel-title">Notifications</span>
+      <button class="btn btn-sm btn-secondary" onclick="markAllRead()">Mark all read</button>
+    </div>
+    <div id="notifList"></div>
+  </div>
+
+  <!-- ── Toast Container ────────────────────────────────────────────── -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- ── Modal ──────────────────────────────────────────────────────── -->
+  <div class="modal-overlay" id="modalOverlay" onclick="closeModal(event)">
+    <div class="modal" id="modal">
+      <div class="modal-header">
+        <span class="modal-title" id="modalTitle"></span>
+        <button class="modal-close" onclick="closeModal()">✕</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-footer" id="modalFooter"></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+  <script src="/assets/app.js"></script>
+</body>
+</html>
