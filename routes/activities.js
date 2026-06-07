@@ -41,7 +41,7 @@ router.post('/', (req, res) => {
 
 // PUT /api/activities/:id/done
 router.put('/:id/done', (req, res) => {
-  db.prepare(`UPDATE activities SET status='Done' WHERE id=?`).run(req.params.id);
+  db.prepare(`UPDATE activities SET status='Done', done_at=datetime('now') WHERE id=?`).run(req.params.id);
   res.json({ success: true });
 });
 

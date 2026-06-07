@@ -1,0 +1,476 @@
+/* ═══════════════════════════════════════════════════════════════
+   IMG CRM — Shared UI Component Library
+   Covers: Modal, FormField, Toast, ConfirmDialog, InlineEdit
+   Usage:  <link rel="stylesheet" href="/src/components/ui/ui.css">
+═══════════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500;600&display=swap');
+
+/* ── Design tokens ─────────────────────────────────────────── */
+:root {
+  --ui-font:           'Figtree', 'Segoe UI', Roboto, sans-serif;
+  --ui-text:           #323338;
+  --ui-text-sub:       #676879;
+  --ui-text-muted:     #9699a6;
+  --ui-bg:             #ffffff;
+  --ui-bg-page:        #f6f7fb;
+  --ui-bg-hover:       #f5f6f8;
+  --ui-border:         #e6e9ef;
+  --ui-border-ui:      #c3c6d4;
+  --ui-radius-sm:      4px;
+  --ui-radius-md:      8px;
+  --ui-radius-lg:      12px;
+  --ui-shadow-menu:    0 8px 28px rgba(50,51,56,.18), 0 2px 8px rgba(50,51,56,.10);
+  --ui-shadow-modal:   0 24px 64px rgba(50,51,56,.22), 0 4px 16px rgba(50,51,56,.12);
+  --ui-primary:        #F7941D;
+  --ui-primary-dk:     #df810b;
+  --ui-primary-light:  #fff4e6;
+  --ui-danger:         #dc2626;
+  --ui-danger-dk:      #b91c1c;
+  --ui-danger-light:   #fff1f2;
+  --ui-success:        #00854d;
+  --ui-success-light:  #f0fdf4;
+  --ui-warning:        #d97706;
+  --ui-warning-light:  #fffbeb;
+  --ui-info:           #0073ea;
+  --ui-info-light:     #e8f1fe;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   BUTTONS  (used by Modal footers & ConfirmDialog)
+═══════════════════════════════════════════════════════════════ */
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 18px;
+  font-family: var(--ui-font);
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  border-radius: var(--ui-radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 100ms, border-color 100ms, box-shadow 100ms, color 100ms;
+  user-select: none;
+}
+.ui-btn:focus-visible {
+  outline: 2px solid var(--ui-primary);
+  outline-offset: 2px;
+}
+.ui-btn--primary {
+  background: var(--ui-primary);
+  border-color: var(--ui-primary);
+  color: #fff;
+}
+.ui-btn--primary:hover {
+  background: var(--ui-primary-dk);
+  border-color: var(--ui-primary-dk);
+}
+.ui-btn--ghost {
+  background: transparent;
+  border-color: var(--ui-border-ui);
+  color: var(--ui-text-sub);
+}
+.ui-btn--ghost:hover {
+  background: var(--ui-bg-hover);
+  border-color: #b0b3c4;
+  color: var(--ui-text);
+}
+.ui-btn--danger {
+  background: var(--ui-danger);
+  border-color: var(--ui-danger);
+  color: #fff;
+}
+.ui-btn--danger:hover {
+  background: var(--ui-danger-dk);
+  border-color: var(--ui-danger-dk);
+}
+.ui-btn--sm {
+  padding: 5px 12px;
+  font-size: 12.5px;
+}
+.ui-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   MODAL
+═══════════════════════════════════════════════════════════════ */
+.ui-modal-wrap {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+}
+
+.ui-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(50, 51, 56, 0.48);
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+.ui-modal-wrap--open .ui-modal-backdrop {
+  opacity: 1;
+}
+
+.ui-modal {
+  position: relative;
+  background: var(--ui-bg);
+  border-radius: var(--ui-radius-lg);
+  box-shadow: var(--ui-shadow-modal);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 48px);
+  width: 100%;
+  opacity: 0;
+  transform: scale(0.96) translateY(8px);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+.ui-modal-wrap--open .ui-modal {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+}
+
+/* Sizes */
+.ui-modal--sm { max-width: 400px; }
+.ui-modal--md { max-width: 560px; }
+.ui-modal--lg { max-width: 720px; }
+.ui-modal--xl { max-width: 920px; }
+
+.ui-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 15px;
+  border-bottom: 1px solid var(--ui-border);
+  flex-shrink: 0;
+  gap: 12px;
+}
+.ui-modal-title {
+  font-family: var(--ui-font);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ui-text);
+  line-height: 1.3;
+}
+.ui-modal-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--ui-radius-sm);
+  background: transparent;
+  color: var(--ui-text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 90ms, color 90ms;
+  padding: 0;
+}
+.ui-modal-close:hover {
+  background: var(--ui-bg-hover);
+  color: var(--ui-text);
+}
+
+.ui-modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+  font-family: var(--ui-font);
+  font-size: 14px;
+  color: var(--ui-text);
+  line-height: 1.6;
+}
+.ui-modal-body::-webkit-scrollbar { width: 4px; }
+.ui-modal-body::-webkit-scrollbar-thumb { background: var(--ui-border-ui); border-radius: 2px; }
+
+.ui-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--ui-border);
+  flex-shrink: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   FORM FIELDS
+═══════════════════════════════════════════════════════════════ */
+.ui-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ui-field-label {
+  font-family: var(--ui-font);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ui-text-sub);
+  line-height: 1.3;
+  user-select: none;
+}
+.ui-field-required {
+  color: var(--ui-danger);
+  margin-left: 2px;
+}
+.ui-field-hint {
+  font-family: var(--ui-font);
+  font-size: 11.5px;
+  color: var(--ui-text-muted);
+  line-height: 1.4;
+}
+.ui-field--error .ui-input { border-color: var(--ui-danger); }
+.ui-field--error .ui-field-hint { color: var(--ui-danger); }
+
+/* Base input / textarea / select */
+.ui-input {
+  font-family: var(--ui-font);
+  font-size: 13.5px;
+  font-weight: 400;
+  color: var(--ui-text);
+  background: var(--ui-bg);
+  border: 1px solid var(--ui-border-ui);
+  border-radius: var(--ui-radius-sm);
+  padding: 7px 10px;
+  width: 100%;
+  line-height: 1.45;
+  transition: border-color 100ms, box-shadow 100ms;
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.ui-input::placeholder { color: var(--ui-text-muted); }
+.ui-input:hover { border-color: #b0b3c4; }
+.ui-input:focus {
+  border-color: var(--ui-primary);
+  box-shadow: 0 0 0 3px rgba(247,148,29,.15);
+}
+.ui-input:disabled {
+  background: var(--ui-bg-page);
+  color: var(--ui-text-muted);
+  cursor: not-allowed;
+}
+
+.ui-textarea {
+  resize: vertical;
+  min-height: 72px;
+}
+
+/* Select wrapper */
+.ui-select-wrap {
+  position: relative;
+}
+.ui-select { padding-right: 28px; cursor: pointer; }
+.ui-select-arrow {
+  position: absolute;
+  right: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--ui-text-muted);
+}
+
+/* Input group (currency, prefix, suffix) */
+.ui-input-group {
+  display: flex;
+  align-items: stretch;
+}
+.ui-input--grouped {
+  border-radius: var(--ui-radius-sm) 0 0 var(--ui-radius-sm);
+  border-right: none;
+  flex: 1;
+}
+.ui-input--grouped:focus { z-index: 1; }
+.ui-input-addon {
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-family: var(--ui-font);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ui-text-sub);
+  background: var(--ui-bg-page);
+  border: 1px solid var(--ui-border-ui);
+  border-radius: 0 var(--ui-radius-sm) var(--ui-radius-sm) 0;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Date input */
+.ui-date { cursor: pointer; }
+.ui-date::-webkit-calendar-picker-indicator {
+  opacity: 0.5;
+  cursor: pointer;
+}
+.ui-date::-webkit-calendar-picker-indicator:hover { opacity: 0.8; }
+
+/* Form grid helpers */
+.ui-form-grid {
+  display: grid;
+  gap: 16px;
+}
+.ui-form-grid--2 { grid-template-columns: 1fr 1fr; }
+.ui-form-grid--3 { grid-template-columns: 1fr 1fr 1fr; }
+
+/* ═══════════════════════════════════════════════════════════════
+   TOAST
+═══════════════════════════════════════════════════════════════ */
+.ui-toast-container {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.ui-toast {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 14px 10px 12px;
+  background: #fff;
+  border-radius: var(--ui-radius-md);
+  border: 1px solid var(--ui-border);
+  box-shadow: 0 4px 20px rgba(50,51,56,.16), 0 1px 4px rgba(50,51,56,.08);
+  font-family: var(--ui-font);
+  font-size: 13.5px;
+  color: var(--ui-text);
+  min-width: 240px;
+  max-width: 420px;
+  pointer-events: auto;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 240ms ease, transform 240ms ease;
+  border-left: 3px solid transparent;
+}
+.ui-toast--visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.ui-toast--success { border-left-color: var(--ui-success); }
+.ui-toast--error   { border-left-color: var(--ui-danger); }
+.ui-toast--warning { border-left-color: var(--ui-warning); }
+.ui-toast--info    { border-left-color: var(--ui-info); }
+
+.ui-toast-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.ui-toast--success .ui-toast-icon { color: var(--ui-success); }
+.ui-toast--error   .ui-toast-icon { color: var(--ui-danger); }
+.ui-toast--warning .ui-toast-icon { color: var(--ui-warning); }
+.ui-toast--info    .ui-toast-icon { color: var(--ui-info); }
+
+.ui-toast-msg {
+  flex: 1;
+  line-height: 1.45;
+}
+
+.ui-toast-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: var(--ui-radius-sm);
+  background: transparent;
+  color: var(--ui-text-muted);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 80ms, color 80ms;
+}
+.ui-toast-close:hover {
+  background: var(--ui-bg-hover);
+  color: var(--ui-text);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   CONFIRM DIALOG  (uses Modal — just adds .ui-confirm-msg)
+═══════════════════════════════════════════════════════════════ */
+.ui-confirm-msg {
+  font-family: var(--ui-font);
+  font-size: 14px;
+  color: var(--ui-text-sub);
+  line-height: 1.6;
+  margin: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   INLINE EDIT
+═══════════════════════════════════════════════════════════════ */
+.ui-inline-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  border-radius: var(--ui-radius-sm);
+  padding: 1px 4px;
+  margin: -1px -4px;
+  transition: background 90ms;
+  min-width: 32px;
+}
+.ui-inline-edit:hover {
+  background: var(--ui-bg-hover);
+}
+.ui-inline-edit:hover::after {
+  content: '';
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239699a6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7'/%3E%3Cpath d='M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-size: contain;
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+.ui-inline-edit--active {
+  background: transparent;
+  cursor: default;
+}
+.ui-inline-edit--active::after { display: none; }
+
+.ui-inline-edit-text {
+  line-height: inherit;
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+}
+.ui-inline-edit-empty {
+  color: var(--ui-text-muted);
+  font-style: italic;
+}
+
+.ui-inline-edit-input {
+  font-family: var(--ui-font);
+  font-size: inherit;
+  font-weight: inherit;
+  color: var(--ui-text);
+  background: var(--ui-bg);
+  border: 1px solid var(--ui-primary);
+  border-radius: var(--ui-radius-sm);
+  padding: 2px 6px;
+  outline: none;
+  width: 100%;
+  min-width: 120px;
+  box-shadow: 0 0 0 3px rgba(247,148,29,.15);
+  line-height: 1.45;
+}

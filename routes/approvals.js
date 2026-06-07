@@ -1,10 +1,12 @@
 const express = require('express');
 const db      = require('../database/db');
-const authMw  = require('../middleware/auth');
+const demoAuth = require('../middleware/demoAuth');
 const { requirePerm } = require('../middleware/permission');
 
 const router = express.Router();
-router.use(authMw);
+// Temporarily using demoAuth (x-demo-user-id) to match opportunities/contacts/design
+// routes — swap to real JWT (authMw) with B.4.
+router.use(demoAuth);
 
 function notify(io, userIds, type, message, oppId) {
   if (!io) return;

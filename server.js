@@ -26,12 +26,32 @@ app.use('/api/users',         require('./routes/users'));
 app.use('/api/roles',         require('./routes/roles'));
 app.use('/api/settings',      require('./routes/settings'));
 app.use('/api/contacts',      require('./routes/contacts'));
+app.use('/api/deal-contacts', require('./routes/dealContacts'));
 app.use('/api/organizations', require('./routes/organizations'));
 app.use('/api/opportunities', require('./routes/opportunities'));
 app.use('/api/quotations',    require('./routes/quotations'));
 app.use('/api/approvals',     require('./routes/approvals'));
 app.use('/api/activities',    require('./routes/activities'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/reports',       require('./routes/reports'));
+
+// Design workflow (uses demo-auth via x-demo-user-id header — see middleware/demoAuth.js)
+app.use('/api',               require('./routes/design'));
+app.use('/api',               require('./routes/products'));
+
+// Idempotent design-pages seed (runs once on first start; safe to re-run).
+require('./database/design_seed')();
+
+// ── Friendly redirects for the new pipeline ────────────────────────────────
+app.get(['/pipeline', '/pipeline/'], (_req, res) => {
+  res.redirect('/pipeline/Pipeline.html');
+});
+app.get('/contacts', (_req, res) => {
+  res.redirect('/pipeline/Contacts.html');
+});
+app.get('/reports', (_req, res) => {
+  res.redirect('/pipeline/Reports.html');
+});
 
 // ── Catch-all: SPA ───────────────────────────────────────────────────────────
 app.get('/app*', (_req, res) => {

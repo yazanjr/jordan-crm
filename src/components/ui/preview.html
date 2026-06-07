@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UI Components — IMG CRM</title>
+  <link rel="stylesheet" href="ui.css" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--ui-font);
+      background: var(--ui-bg-page);
+      color: var(--ui-text);
+      font-size: 14px;
+      padding: 40px 32px;
+      -webkit-font-smoothing: antialiased;
+    }
+    h1 { font-size: 22px; font-weight: 600; margin-bottom: 8px; }
+    h2 {
+      font-size: 11px; font-weight: 600; letter-spacing: .08em;
+      text-transform: uppercase; color: var(--ui-text-muted);
+      margin: 36px 0 16px; padding-bottom: 8px;
+      border-bottom: 1px solid var(--ui-border);
+    }
+    .subtitle { color: var(--ui-text-sub); font-size: 13px; margin-bottom: 32px; }
+    .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .card {
+      background: #fff;
+      border: 1px solid var(--ui-border);
+      border-radius: var(--ui-radius-md);
+      padding: 24px;
+      max-width: 560px;
+    }
+    .card .ui-form-grid { margin-top: 16px; }
+    .deal-title {
+      font-size: 18px; font-weight: 600;
+      display: inline-flex; align-items: center;
+    }
+    .deal-value {
+      font-size: 14px; color: var(--ui-text-sub);
+      display: inline-flex; align-items: center;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>IMG CRM — UI Component Library</h1>
+  <p class="subtitle">Shared components for all pages. Do not modify — consume only.</p>
+
+  <!-- ── Buttons ─────────────────────────────────────────── -->
+  <h2>Buttons</h2>
+  <div class="row">
+    <button class="ui-btn ui-btn--primary">Primary</button>
+    <button class="ui-btn ui-btn--ghost">Cancel</button>
+    <button class="ui-btn ui-btn--danger">Delete</button>
+    <button class="ui-btn ui-btn--primary ui-btn--sm">Small Primary</button>
+    <button class="ui-btn ui-btn--ghost ui-btn--sm">Small Ghost</button>
+    <button class="ui-btn ui-btn--primary" disabled>Disabled</button>
+  </div>
+
+  <!-- ── FormField ───────────────────────────────────────── -->
+  <h2>Form Fields</h2>
+  <div class="card">
+    <div class="ui-form-grid ui-form-grid--2">
+      <div id="ff-text"></div>
+      <div id="ff-email"></div>
+    </div>
+    <div class="ui-form-grid" style="margin-top:16px">
+      <div id="ff-select"></div>
+    </div>
+    <div class="ui-form-grid ui-form-grid--2" style="margin-top:16px">
+      <div id="ff-date"></div>
+      <div id="ff-currency"></div>
+    </div>
+    <div class="ui-form-grid" style="margin-top:16px">
+      <div id="ff-notes"></div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:20px">
+      <button class="ui-btn ui-btn--ghost">Cancel</button>
+      <button class="ui-btn ui-btn--primary">Save Deal</button>
+    </div>
+  </div>
+
+  <!-- ── Toast ───────────────────────────────────────────── -->
+  <h2>Toast Notifications</h2>
+  <div class="row">
+    <button class="ui-btn ui-btn--ghost" onclick="Toast.success('Deal saved successfully!')">
+      Success Toast
+    </button>
+    <button class="ui-btn ui-btn--ghost" onclick="Toast.error('Failed to save — please try again.')">
+      Error Toast
+    </button>
+    <button class="ui-btn ui-btn--ghost" onclick="Toast.warning('Connection is slow.')">
+      Warning Toast
+    </button>
+    <button class="ui-btn ui-btn--ghost" onclick="Toast.info('3 filters applied.')">
+      Info Toast
+    </button>
+  </div>
+
+  <!-- ── Modal ───────────────────────────────────────────── -->
+  <h2>Modal</h2>
+  <div class="row">
+    <button class="ui-btn ui-btn--ghost" id="btnModalSm">Small Modal</button>
+    <button class="ui-btn ui-btn--ghost" id="btnModalMd">Medium Modal</button>
+    <button class="ui-btn ui-btn--ghost" id="btnModalLg">Large Modal (form)</button>
+  </div>
+
+  <!-- ── ConfirmDialog ───────────────────────────────────── -->
+  <h2>Confirm Dialog</h2>
+  <div class="row">
+    <button class="ui-btn ui-btn--ghost" id="btnConfirm">Archive Deal</button>
+    <button class="ui-btn ui-btn--danger" id="btnDelete">Delete Deal</button>
+  </div>
+
+  <!-- ── InlineEdit ──────────────────────────────────────── -->
+  <h2>Inline Edit</h2>
+  <div class="card">
+    <p style="font-size:11px;color:var(--ui-text-muted);margin-bottom:12px">Click the fields below to edit</p>
+    <p style="font-size:12px;color:var(--ui-text-sub);margin-bottom:4px">Deal name</p>
+    <div class="deal-title" id="ie-title"></div>
+    <p style="font-size:12px;color:var(--ui-text-sub);margin:12px 0 4px">Expected value</p>
+    <div class="deal-value" id="ie-value"></div>
+    <p style="font-size:12px;color:var(--ui-text-sub);margin:12px 0 4px">Notes (empty field)</p>
+    <div id="ie-empty" style="font-size:13px;color:var(--ui-text-sub)"></div>
+  </div>
+
+  <!-- ── Scripts ─────────────────────────────────────────── -->
+  <script src="modal.js"></script>
+  <script src="form-field.js"></script>
+  <script src="toast.js"></script>
+  <script src="confirm-dialog.js"></script>
+  <script src="inline-edit.js"></script>
+
+  <script>
+  'use strict';
+
+  /* ── FormField demos ──────────────────────────────────── */
+  document.getElementById('ff-text').innerHTML =
+    FormField.text({ label: 'Deal Name', name: 'name', placeholder: 'e.g. Amman Tower HVAC', required: true });
+
+  document.getElementById('ff-email').innerHTML =
+    FormField.email({ label: 'Client Email', name: 'email', placeholder: 'client@example.com' });
+
+  document.getElementById('ff-select').innerHTML =
+    FormField.select({
+      label: 'Stage', name: 'stage', required: true,
+      options: ['Prospect', 'Tender', 'Analysis', 'Negotiation', 'Closing'],
+    });
+
+  document.getElementById('ff-date').innerHTML =
+    FormField.date({ label: 'Expected Close', name: 'close_date' });
+
+  document.getElementById('ff-currency').innerHTML =
+    FormField.currency({ label: 'Deal Value', name: 'value', currency: 'JOD', required: true });
+
+  document.getElementById('ff-notes').innerHTML =
+    FormField.textarea({ label: 'Notes', name: 'notes', rows: 3, placeholder: 'Any additional context…', hint: 'Visible to the technical team.' });
+
+  /* ── Modal demos ──────────────────────────────────────── */
+  document.getElementById('btnModalSm').addEventListener('click', () => {
+    new Modal({
+      title: 'Confirm action',
+      body:  '<p style="color:var(--ui-text-sub);line-height:1.6">A small modal for short messages and quick confirmations.</p>',
+      footer: `<button class="ui-btn ui-btn--ghost" id="mClose">Cancel</button>
+               <button class="ui-btn ui-btn--primary" id="mOk">OK</button>`,
+      size: 'sm',
+    }).open();
+  });
+
+  document.getElementById('btnModalMd').addEventListener('click', () => {
+    const m = new Modal({ title: 'Edit deal', size: 'md' });
+    m.setBody(`
+      <div class="ui-form-grid">
+        ${FormField.text({ label: 'Deal Name', name: 'md_name', value: 'Amman Tower HVAC', required: true })}
+      </div>
+      <div class="ui-form-grid ui-form-grid--2" style="margin-top:14px">
+        ${FormField.select({ label: 'Stage', name: 'md_stage', value: 'Analysis', options: ['Prospect','Tender','Analysis','Negotiation','Closing'] })}
+        ${FormField.currency({ label: 'Value', name: 'md_val', value: '125000', currency: 'JOD' })}
+      </div>
+    `);
+    m.setFooter(`
+      <button class="ui-btn ui-btn--ghost">Cancel</button>
+      <button class="ui-btn ui-btn--primary" onclick="Toast.success('Changes saved!'); this.closest('.ui-modal-wrap')._modal?.close()">Save</button>
+    `);
+    m.open();
+  });
+
+  document.getElementById('btnModalLg').addEventListener('click', () => {
+    const m = new Modal({ title: 'New Opportunity', size: 'lg' });
+    m.setBody(`
+      <div class="ui-form-grid ui-form-grid--2">
+        ${FormField.text({ label: 'Deal Name', name: 'lg_name', required: true })}
+        ${FormField.select({ label: 'Stage', name: 'lg_stage', options: ['Prospect','Tender','Analysis','Negotiation','Closing'] })}
+      </div>
+      <div class="ui-form-grid ui-form-grid--2" style="margin-top:14px">
+        ${FormField.currency({ label: 'Expected Value', name: 'lg_val', currency: 'JOD' })}
+        ${FormField.date({ label: 'Expected Close Date', name: 'lg_date' })}
+      </div>
+      <div class="ui-form-grid" style="margin-top:14px">
+        ${FormField.textarea({ label: 'Notes', name: 'lg_notes', rows: 4, placeholder: 'Project background, client info, technical scope…' })}
+      </div>
+    `);
+    m.setFooter(`
+      <button class="ui-btn ui-btn--ghost" onclick="">Cancel</button>
+      <button class="ui-btn ui-btn--primary">Create Opportunity</button>
+    `);
+    m.open();
+  });
+
+  /* ── ConfirmDialog demos ──────────────────────────────── */
+  document.getElementById('btnConfirm').addEventListener('click', () => {
+    ConfirmDialog.show({
+      title:       'Archive this deal?',
+      message:     'The deal will be moved to the archive. You can restore it later.',
+      confirmText: 'Archive',
+      onConfirm:   () => Toast.success('Deal archived.'),
+      onCancel:    () => Toast.info('Cancelled.'),
+    });
+  });
+
+  document.getElementById('btnDelete').addEventListener('click', () => {
+    ConfirmDialog.delete({
+      itemName:  'Amman Tower HVAC',
+      onConfirm: () => Toast.success('Deal deleted.'),
+    });
+  });
+
+  /* ── InlineEdit demos ─────────────────────────────────── */
+  new InlineEdit(document.getElementById('ie-title'), {
+    value:   'Amman Tower HVAC',
+    onSave:  async (v) => { await new Promise(r => setTimeout(r, 300)); Toast.success('Name updated!'); },
+  });
+
+  new InlineEdit(document.getElementById('ie-value'), {
+    value:       '125,000 JOD',
+    placeholder: 'Enter value',
+    onSave:      async (v) => Toast.success('Value updated!'),
+  });
+
+  new InlineEdit(document.getElementById('ie-empty'), {
+    value:     '',
+    emptyText: 'Add a note…',
+    type:      'textarea',
+    onSave:    async (v) => Toast.success('Note saved!'),
+  });
+  </script>
+
+</body>
+</html>

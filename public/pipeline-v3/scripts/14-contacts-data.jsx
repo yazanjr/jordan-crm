@@ -1,0 +1,58 @@
+// IMG CRM — real contacts (25), loaded from IMG_CRM_Seed_Data.xlsx.
+// Schema:
+//   id, name, role, company, orgId,
+//   phoneWork, phoneMobile, emailWork, emailPersonal,
+//   city, primary (bool), owner (full name from USERS), notes,
+//   status (compat with contacts page filter — all 'active' until we have real status data)
+
+window.CONTACTS = [
+  { id: 'C001', name: 'Ahmad Khalil',         role: 'VP Projects',          company: 'Abdali Investment & Development', orgId: 'ORG001', phoneWork: '06 560 1010', phoneMobile: '079 500 1001', emailWork: 'ahmad.khalil@abdali.jo',     emailPersonal: '',                          city: 'Amman',    primary: true,  owner: 'Yazan Obeidat',  notes: 'Decision maker for all HVAC',           status: 'active' },
+  { id: 'C002', name: 'Nadia Sabbagh',        role: 'Facilities Manager',   company: 'Abdali Investment & Development', orgId: 'ORG001', phoneWork: '06 560 1020', phoneMobile: '079 500 1002', emailWork: 'nadia.s@abdali.jo',           emailPersonal: '',                          city: 'Amman',    primary: false, owner: 'Yazan Obeidat',  notes: 'Day-to-day technical contact',           status: 'active' },
+  { id: 'C003', name: 'Fadi Tamimi',          role: 'CEO',                  company: 'Tamimi Holdings',                  orgId: 'ORG002', phoneWork: '06 541 2201', phoneMobile: '079 988 0000', emailWork: 'fadi@tamimi-holdings.jo',     emailPersonal: 'fadi.tamimi@gmail.com',     city: 'Amman',    primary: true,  owner: 'Yazan Obeidat',  notes: 'Owner — makes final decisions',          status: 'active' },
+  { id: 'C004', name: 'Laith Tamimi',         role: 'Project Manager',      company: 'Tamimi Holdings',                  orgId: 'ORG002', phoneWork: '',            phoneMobile: '079 988 1000', emailWork: 'laith@tamimi-holdings.jo',    emailPersonal: '',                          city: 'Amman',    primary: false, owner: 'Yazan Obeidat',  notes: "Fadi's son, manages villa projects",     status: 'active' },
+  { id: 'C005', name: 'Nour Halabi',          role: 'Development Director', company: 'Capital Real Estate',              orgId: 'ORG003', phoneWork: '06 568 9010', phoneMobile: '079 456 0000', emailWork: 'nour@capital-re.jo',          emailPersonal: '',                          city: 'Amman',    primary: true,  owner: 'Mahmoud Haddad', notes: 'Main contact for Shmeisani tower',       status: 'active' },
+  { id: 'C006', name: 'Tariq Al-Masri',       role: 'MEP Coordinator',      company: 'Capital Real Estate',              orgId: 'ORG003', phoneWork: '06 568 9020', phoneMobile: '079 456 1000', emailWork: 'tariq@capital-re.jo',         emailPersonal: '',                          city: 'Amman',    primary: false, owner: 'Mahmoud Haddad', notes: 'Technical specifications contact',       status: 'active' },
+  { id: 'C007', name: 'Dr. Samer Awwad',      role: 'CEO',                  company: 'Jordan Medical Center',            orgId: 'ORG004', phoneWork: '06 585 1001', phoneMobile: '079 733 0000', emailWork: 's.awwad@jmc.jo',              emailPersonal: '',                          city: 'Amman',    primary: true,  owner: 'Yazan Obeidat',  notes: 'Hospital expansion project sponsor',     status: 'active' },
+  { id: 'C008', name: 'Eng. Hala Qasem',      role: 'Facilities Director',  company: 'Jordan Medical Center',            orgId: 'ORG004', phoneWork: '06 585 1050', phoneMobile: '079 733 1000', emailWork: 'h.qasem@jmc.jo',              emailPersonal: '',                          city: 'Amman',    primary: false, owner: 'Yazan Obeidat',  notes: 'Technical requirements & specs',         status: 'active' },
+  { id: 'C009', name: 'Majed Al-Khatib',      role: 'GM Operations',        company: 'Al-Dawliyya Hotels',               orgId: 'ORG005', phoneWork: '05 349 1010', phoneMobile: '079 800 5000', emailWork: 'majed@dawliyya.jo',           emailPersonal: '',                          city: 'Dead Sea', primary: true,  owner: 'Mahmoud Haddad', notes: 'Decision maker for resort expansion',    status: 'active' },
+  { id: 'C010', name: 'Ahmad Khalil',         role: 'Owner',                company: 'Khalil Trading Co.',               orgId: 'ORG006', phoneWork: '06 402 3301', phoneMobile: '079 811 0000', emailWork: 'ahmad@khalil-trading.jo',     emailPersonal: '',                          city: 'Amman',    primary: true,  owner: 'Mahmoud Haddad', notes: 'Walk-in client — warehouse cooling',     status: 'active' },
+  { id: 'C011', name: 'Rami Haddad',          role: 'Owner',                company: 'Rami Haddad Properties',           orgId: 'ORG007', phoneWork: '',            phoneMobile: '079 611 0000', emailWork: 'rami@rhp.jo',                 emailPersonal: 'rami.haddad@outlook.com',   city: 'Amman',    primary: true,  owner: 'Mahmoud Haddad', notes: 'Direct client — residential tower',      status: 'active' },
+  { id: 'C012', name: 'Sara Nasser',          role: 'Operations Manager',   company: 'Cafe Rumi Chain',                  orgId: 'ORG008', phoneWork: '',            phoneMobile: '079 123 0000', emailWork: 'sara@cafesrumi.jo',           emailPersonal: '',                          city: 'Amman',    primary: true,  owner: 'Mahmoud Haddad', notes: 'Split units for all branches',           status: 'active' },
+  { id: 'C013', name: 'Prof. Mazen Shobaki',  role: 'VP Admin',             company: 'University of Petra',              orgId: 'ORG009', phoneWork: '06 571 5510', phoneMobile: '079 910 0000', emailWork: 'm.shobaki@uop.edu.jo',        emailPersonal: '',                          city: 'Amman',    primary: true,  owner: 'Yazan Obeidat',  notes: 'New campus building HVAC',                status: 'active' },
+  { id: 'C014', name: 'Eng. Basil Sawalha',   role: 'Maintenance Head',     company: 'University of Petra',              orgId: 'ORG009', phoneWork: '06 571 5520', phoneMobile: '079 910 1000', emailWork: 'b.sawalha@uop.edu.jo',        emailPersonal: '',                          city: 'Amman',    primary: false, owner: 'Yazan Obeidat',  notes: 'Existing systems maintenance',           status: 'active' },
+  { id: 'C015', name: 'Jihad Abu Ghazaleh',   role: 'Procurement Director', company: 'Safeway Supermarkets',             orgId: 'ORG010', phoneWork: '06 581 0050', phoneMobile: '079 820 0000', emailWork: 'j.abughazaleh@safeway.jo',    emailPersonal: '',                          city: 'Amman',    primary: true,  owner: 'Yazan Obeidat',  notes: '12-branch refrigeration & AC',           status: 'active' },
+  { id: 'C016', name: 'Eng. Rawan Qudsi',     role: 'Senior MEP Engineer',  company: 'Sigma Engineering',                orgId: 'ORG011', phoneWork: '06 464 2110', phoneMobile: '079 660 1000', emailWork: 'rawan@sigma-eng.jo',          emailPersonal: '',                          city: 'Amman',    primary: true,  owner: 'Yazan Obeidat',  notes: 'Specifies HVAC for Abdali projects',     status: 'active' },
+  { id: 'C017', name: 'Eng. Ziad Hammad',     role: 'Partner',              company: 'Arc Design Consultants',           orgId: 'ORG012', phoneWork: '06 585 7710', phoneMobile: '079 770 2000', emailWork: 'ziad@arc-design.jo',          emailPersonal: '',                          city: 'Amman',    primary: true,  owner: 'Yazan Obeidat',  notes: 'Recommends IMG for residential',         status: 'active' },
+  { id: 'C018', name: 'Eng. Rami Odeh',       role: 'MEP Lead',             company: 'Beta Engineering',                 orgId: 'ORG013', phoneWork: '06 461 3310', phoneMobile: '079 880 3000', emailWork: 'rami.o@beta-eng.jo',          emailPersonal: '',                          city: 'Amman',    primary: true,  owner: 'Mahmoud Haddad', notes: 'Commercial tower specifications',        status: 'active' },
+  { id: 'C019', name: 'Eng. Dana Masoud',     role: 'Project Director',     company: 'Dar Al-Omran',                     orgId: 'ORG014', phoneWork: '06 592 4410', phoneMobile: '079 990 4000', emailWork: 'dana@daralomran.jo',          emailPersonal: '',                          city: 'Amman',    primary: true,  owner: 'Yazan Obeidat',  notes: 'Government projects — tenders',          status: 'active' },
+  { id: 'C020', name: 'Abu Mohammad Saleh',   role: 'Site Manager',         company: 'ABC Contracting',                  orgId: 'ORG015', phoneWork: '06 401 5510', phoneMobile: '079 440 5000', emailWork: 'projects@abc-contracting.jo', emailPersonal: '',                          city: 'Amman',    primary: true,  owner: 'Yazan Obeidat',  notes: 'Main installer for commercial',          status: 'active' },
+  { id: 'C021', name: 'Khaled Shami',         role: 'Owner',                company: 'Elite Build',                      orgId: 'ORG016', phoneWork: '06 541 8810', phoneMobile: '079 550 6000', emailWork: 'khaled@elitebuild.jo',        emailPersonal: '',                          city: 'Amman',    primary: true,  owner: 'Yazan Obeidat',  notes: 'Luxury villa specialist',                status: 'active' },
+  { id: 'C022', name: 'Issa Barghouti',       role: 'Project Manager',      company: 'Home Pro JO',                      orgId: 'ORG017', phoneWork: '',            phoneMobile: '079 855 0000', emailWork: 'issa@homepro.jo',             emailPersonal: '',                          city: 'Amman',    primary: true,  owner: 'Mahmoud Haddad', notes: 'Residential installations',              status: 'active' },
+  { id: 'C023', name: 'Eng. Sami Taweel',     role: 'Contracts Manager',    company: 'Build Corp International',         orgId: 'ORG018', phoneWork: '06 580 2210', phoneMobile: '079 330 7000', emailWork: 'sami@buildcorp.jo',           emailPersonal: '',                          city: 'Amman',    primary: true,  owner: 'Mahmoud Haddad', notes: 'Tower & mall HVAC tenders',              status: 'active' },
+  { id: 'C024', name: 'Abu Ayman',            role: 'Owner',                company: 'Al-Mohandis MEP',                  orgId: 'ORG019', phoneWork: '05 390 1110', phoneMobile: '079 220 8000', emailWork: 'ayman@mohandis-mep.jo',       emailPersonal: '',                          city: 'Zarqa',    primary: true,  owner: 'Yazan Obeidat',  notes: 'HVAC installation subcontractor',        status: 'active' },
+  { id: 'C025', name: 'Firas Habashneh',      role: 'Service Manager',      company: 'Frost HVAC Services',              orgId: 'ORG020', phoneWork: '',            phoneMobile: '079 666 3300', emailWork: 'firas@frosthvac.jo',          emailPersonal: '',                          city: 'Amman',    primary: true,  owner: 'Mahmoud Haddad', notes: 'Maintenance contracts',                  status: 'active' },
+];
+
+// Compatibility shims so existing UI code that reads c.email / c.phone keeps working.
+// New code should prefer emailWork/emailPersonal and phoneMobile/phoneWork directly.
+window.CONTACTS.forEach(c => {
+  c.email = c.emailWork || c.emailPersonal || '';
+  c.phone = c.phoneMobile || c.phoneWork || '';
+  c.tags  = c.primary ? ['Primary'] : [];      // Real-data tag: just "Primary" for primary contacts
+  c.lastContact = '';                           // No real activity history yet
+});
+
+// Convenience lookup
+window.findContactById = (id) => window.CONTACTS.find(c => c.id === id) || null;
+
+// All contacts for an organization (matched by orgId — robust to name typos in deals).
+window.contactsForOrgId = (orgId) =>
+  window.CONTACTS.filter(c => c.orgId === orgId);
+
+// All deals for a contact (matched by contactId, primary), plus deals on the same org.
+window.dealsForContactId = (contactId) => {
+  const deals = window.DEALS || [];
+  return deals.filter(d => d.contactId === contactId);
+};
+window.dealsForOrgId = (orgId) =>
+  (window.DEALS || []).filter(d => d.orgId === orgId);

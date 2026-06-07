@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pipeline — IMG CRM</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    @keyframes toastIn {
+      from { opacity:0; transform:translateX(-50%) translateY(8px); }
+      to   { opacity:1; transform:translateX(-50%) translateY(0); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── Demo notice ──────────────────────────────────────── -->
+  <div class="connect-bar" id="connectBar" style="display:none">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    Showing <strong>demo data</strong> — not connected to the CRM.&nbsp;
+    <a onclick="window.location.href='http://localhost:4000'">Sign in to the CRM</a> to load live deals.
+    <button class="close-bar" id="closeBar">✕</button>
+  </div>
+
+  <div class="board-wrap">
+
+    <!-- ── Toolbar ────────────────────────────────────────── -->
+    <div class="toolbar">
+      <div class="toolbar-left">
+
+        <!-- Search — expands inline on click -->
+        <div class="search-wrapper" id="searchWrapper">
+          <button class="tb-btn search-btn" id="searchBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            Search
+          </button>
+          <div class="search-expanded-area" id="searchExpanded">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" id="searchInput" placeholder="Search deals…" autocomplete="off" />
+            <button class="search-clear-btn" id="searchClear">✕</button>
+          </div>
+        </div>
+
+        <!-- Person filter -->
+        <button class="tb-btn" id="personFilterBtn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          Person
+        </button>
+
+        <div class="tb-divider"></div>
+
+        <!-- Filter -->
+        <button class="tb-btn" id="filterBtn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+          Filter
+        </button>
+
+        <!-- Sort -->
+        <button class="tb-btn" id="sortBtn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="21" y1="10" x2="7" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="21" y1="18" x2="7" y2="18"/></svg>
+          Sort
+        </button>
+
+      </div>
+
+      <div class="toolbar-right">
+        <!-- Collapse -->
+        <button class="tb-icon-btn" title="Collapse columns">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="10" y1="14" x2="21" y2="3"/><line x1="3" y1="21" x2="14" y2="10"/></svg>
+        </button>
+        <!-- Expand -->
+        <button class="tb-icon-btn" title="Expand columns">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- ── Kanban board ──────────────────────────────────── -->
+    <div class="board" id="board">
+      <!-- injected by app.js -->
+    </div>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

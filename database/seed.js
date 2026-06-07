@@ -11,6 +11,7 @@ const roles = [
   { name: 'salesman',       description: 'Creates and manages own opportunities' },
   { name: 'design_manager', description: 'Manages design queue, assigns designers, approves quotations' },
   { name: 'designer',       description: 'Creates designs and quotations for assigned opportunities' },
+  { name: 'product_manager',description: 'Owns pricelist, costing, and SKU catalogue' },
 ];
 
 const insertRole = db.prepare(`INSERT OR IGNORE INTO roles (name, description) VALUES (?, ?)`);
@@ -44,6 +45,9 @@ const allPerms = [
   { key: 'roles.manage',          category: 'Roles',         description: 'Manage roles and permissions' },
   { key: 'settings.manage',       category: 'Settings',      description: 'Manage system settings' },
   { key: 'reports.view_all',      category: 'Reports',       description: 'View all reports and analytics' },
+  { key: 'costs.view',            category: 'Pricing',       description: 'See cost / margin on products & quotations' },
+  { key: 'pricelist.manage',      category: 'Pricing',       description: 'Upload and edit the SKU pricelist' },
+  { key: 'skus.view',             category: 'Pricing',       description: 'View SKU catalogue (no cost columns)' },
 ];
 
 const insertPerm = db.prepare(`INSERT OR IGNORE INTO permissions (key, category, description) VALUES (?, ?, ?)`);
@@ -74,7 +78,17 @@ const matrix = {
   designer: [
     'opps.view_own',
     'quot.create', 'quot.request_revision',
+    'skus.view',
     'note.create_own',
+  ],
+  product_manager: [
+    // Full read access across the system (Phase 8.1 — parity with high mgmt).
+    'opps.view_all', 'opps.edit_all', 'opps.change_stage',
+    'quot.review', 'quot.approve',
+    'reports.view_all',
+    'note.create_own', 'note.assign_task', 'note.view_team',
+    // PM-exclusive
+    'costs.view', 'pricelist.manage', 'skus.view',
   ],
 };
 
@@ -92,20 +106,28 @@ const DEFAULT_PASSWORD = 'IMG@2026';
 const hash = bcrypt.hashSync(DEFAULT_PASSWORD, 10);
 
 const users = [
-  { name: 'Admin',    email: 'admin@img.com',    role: 'admin' },
-  { name: 'Essam',   email: 'essam@img.com',    role: 'sales_manager' },
-  { name: 'Yazan',   email: 'yazan@img.com',    role: 'salesman' },
-  { name: 'Mahmoud', email: 'mahmoud@img.com',  role: 'salesman' },
-  { name: 'Sally',   email: 'sally@img.com',    role: 'design_manager' },
-  { name: 'Omar',    email: 'omar@img.com',     role: 'designer' },
-  { name: 'Hilal',   email: 'hilal@img.com',    role: 'designer' },
+  { name: 'Admin',    email: 'admin@img.com',    role: 'admin',           can_view_costs: 1 },
+  { name: 'Essam',   email: 'essam@img.com',    role: 'sales_manager',   can_view_costs: 0 },
+  { name: 'Yazan',   email: 'yazan@img.com',    role: 'salesman',        can_view_costs: 0 },
+  { name: 'Mahmoud', email: 'mahmoud@img.com',  role: 'salesman',        can_view_costs: 0 },
+  { name: 'Sally',   email: 'sally@img.com',    role: 'design_manager',  can_view_costs: 0 },
+  { name: 'Omar',    email: 'omar@img.com',     role: 'designer',        can_view_costs: 0 },
+  { name: 'Hilal',   email: 'hilal@img.com',    role: 'designer',        can_view_costs: 0 },
+  // Product Management team — own the pricelist, can view costs.
+  { name: 'Anas Al Dalabeeh', email: 'anas@img.com',   role: 'product_manager', can_view_costs: 1 },
+  { name: 'Tamara Nabi',      email: 'tamara@img.com', role: 'product_manager', can_view_costs: 1 },
+  { name: 'Hamza Jaber',      email: 'hamza@img.com',  role: 'product_manager', can_view_costs: 1 },
 ];
 
 const insertUser = db.prepare(`
-  INSERT OR IGNORE INTO users (name, email, password_hash, role_id)
-  VALUES (?, ?, ?, ?)
+  INSERT OR IGNORE INTO users (name, email, password_hash, role_id, can_view_costs)
+  VALUES (?, ?, ?, ?, ?)
 `);
-users.forEach(u => insertUser.run(u.name, u.email, hash, getRoleId(u.role)));
+const updateUserCostsFlag = db.prepare(`UPDATE users SET can_view_costs = ? WHERE email = ?`);
+users.forEach(u => {
+  insertUser.run(u.name, u.email, hash, getRoleId(u.role), u.can_view_costs || 0);
+  updateUserCostsFlag.run(u.can_view_costs || 0, u.email);   // re-apply on idempotent re-seed
+});
 
 // ── Default Settings ───────────────────────────────────────────────────────
 const settings = [

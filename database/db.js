@@ -9,8 +9,9 @@ const dir     = path.dirname(path.resolve(DB_PATH));
 if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
 const db = new DatabaseSync(path.resolve(DB_PATH));
-db.exec('PRAGMA journal_mode = WAL');
+db.exec('PRAGMA journal_mode = DELETE');
 db.exec('PRAGMA foreign_keys = ON');
+db.exec('PRAGMA synchronous = NORMAL');
 
 applySchema(db);
 

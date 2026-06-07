@@ -58,6 +58,7 @@ function closeModal(e) {
 const ROUTES = {
   'dashboard':        viewDashboard,
   'pipeline':         viewPipeline,
+  'pipeline-v2':      viewPipelineV2,
   'opportunities':    viewPipeline,
   'opportunity':      viewOpportunityDetail,
   'new-opportunity':  viewNewOpportunity,
@@ -134,6 +135,7 @@ function getSidebarItems() {
 
   if (['admin','sales_manager','salesman'].includes(role)) {
     items.push({ icon: '📋', label: 'Pipeline',      route: 'pipeline' });
+    items.push({ icon: '🗂️', label: 'Pipeline V2',   route: 'pipeline-v2' });
     items.push({ icon: '📅', label: 'Activities',    route: 'activities' });
   }
   if (['admin','sales_manager','salesman'].includes(role)) {
@@ -341,6 +343,20 @@ async function viewDashboard() {
       </div>
     `);
   } catch (e) { render(`<div class="empty-state"><p>Error loading dashboard: ${esc(e.message)}</p></div>`); }
+}
+
+// ── Pipeline V2 (Kanban board, embedded) ──────────────────────────────
+function viewPipelineV2() {
+  setTitle('Pipeline V2');
+  render(`
+    <div style="margin:-20px;height:calc(100vh - var(--topbar-h));">
+      <iframe
+        src="/pipeline-v2/"
+        style="width:100%;height:100%;border:none;display:block;"
+        title="Pipeline V2"
+      ></iframe>
+    </div>
+  `);
 }
 
 // ── Pipeline ──────────────────────────────────────────────────────────

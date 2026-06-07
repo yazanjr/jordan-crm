@@ -1,9 +1,10 @@
 const express = require('express');
 const db      = require('../database/db');
-const authMw  = require('../middleware/auth');
+const demoAuth = require('../middleware/demoAuth');
 
 const router = express.Router();
-router.use(authMw);
+// Temporarily using demoAuth until B.4 adds real login.
+router.use(demoAuth);
 
 // GET /api/organizations?search=...
 router.get('/', (req, res) => {
