@@ -29,11 +29,13 @@ app.use('/api/contacts',      require('./routes/contacts'));
 app.use('/api/deal-contacts', require('./routes/dealContacts'));
 app.use('/api/organizations', require('./routes/organizations'));
 app.use('/api/opportunities', require('./routes/opportunities'));
+app.use('/api/projects',      require('./routes/projects'));
 app.use('/api/quotations',    require('./routes/quotations'));
 app.use('/api/approvals',     require('./routes/approvals'));
 app.use('/api/activities',    require('./routes/activities'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/reports',       require('./routes/reports'));
+app.use('/api/diagnostics',   require('./routes/diagnostics'));
 
 // Design workflow (uses demo-auth via x-demo-user-id header — see middleware/demoAuth.js)
 app.use('/api',               require('./routes/design'));
