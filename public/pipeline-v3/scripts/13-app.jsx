@@ -179,7 +179,9 @@ function PipelineApp() {
     Promise.all([
       window.api.get('/contacts').catch(() => null),
       window.api.get('/organizations').catch(() => null),
-    ]).then(([contacts, orgs]) => {
+      window.api.get('/opportunities/meta/areas').catch(() => null),
+    ]).then(([contacts, orgs, areas]) => {
+      if (Array.isArray(areas)) window.AREAS = areas;
       if (Array.isArray(orgs)) {
         window.ORGANIZATIONS = orgs.map(o => ({
           id: o.id, name: o.name, type: o.type || '', dbId: o.id,
@@ -342,12 +344,13 @@ function PipelineApp() {
     const out = {};
     FILTER_KEYS.forEach(k => {
       if (k === 'stage') { out[k] = (window.STAGE_ORDER || []).slice(); return; }
+      if (k === 'district') { out[k] = (window.AREAS || []).slice(); return; }  // curated Project Location list
       const seen = new Set();
       deals.forEach(d => { const v = d[k]; if (v != null && v !== '') seen.add(v); });
       out[k] = [...seen].sort((a, b) => String(a).localeCompare(String(b)));
     });
     return out;
-  }, [deals]);
+  }, [deals, contactsReady]);
 
   // ---- Filtering pipeline ----
   const filteredDeals = useMemo(() => {
@@ -668,60 +671,62 @@ function PipelineApp() {
       {modal?.kind === 'newdeal' && (
         <window.NewDealModal
           onClose={closeModal}
-          onSubmit={(data) => {
-            // 1) If account isn't linked to an existing org, create one.
-            let orgId = data.orgId;
-            if (!orgId && data.account) {
-              const orgNum = (window.ORGANIZATIONS || []).length + 1;
-              orgId = 'ORG' + String(orgNum + 100).padStart(3, '0');
-              window.ORGANIZATIONS.push({
-                id: orgId, name: data.account, type: 'Customer', industry: '',
-                address: '', city: 'Amman', phone: '', email: '', website: '', notes: '',
+          onSubmit={async (data) => {
+            // Real persistence: create org/contact/area as needed, then the deal.
+            try {
+              const fired = [];
+              // 1) Organization — reuse the picked one, else create it.
+              let org_id = data.orgId;
+              if (!org_id && data.account && data.account.trim()) {
+                const r = await window.api.post('/organizations', { name: data.account.trim(), type: 'Customer' });
+                org_id = r.id; fired.push(`account "${data.account.trim()}"`);
+              }
+              // 2) Contact — reuse the picked one, else create it.
+              let contact_id = data.contactId;
+              if (!contact_id && data.contactName && data.contactName.trim()) {
+                const r = await window.api.post('/contacts', {
+                  name: data.contactName.trim(),
+                  emails: data.contactEmail ? [data.contactEmail] : [],
+                  phones: data.contactPhone ? [data.contactPhone] : [],
+                  organization_id: org_id || null,
+                });
+                contact_id = r.id; fired.push(`contact "${data.contactName.trim()}"`);
+              }
+              // 3) Project location — persist a newly-typed area (search-or-create).
+              const area = (data.district || '').trim();
+              if (area && !(window.AREAS || []).includes(area)) {
+                const r = await window.api.post('/opportunities/meta/areas', { name: area }).catch(() => null);
+                if (r && Array.isArray(r.areas)) window.AREAS = r.areas;
+                fired.push(`area "${area}"`);
+              }
+              // 4) The opportunity itself (defaults to Prospect server-side).
+              const ownerUser = (window.USERS || []).find(u => u.name === data.owner);
+              const created = await window.api.post('/opportunities', {
+                title: data.name,
+                salesman_id: ownerUser ? ownerUser.id : undefined,
+                product_group: data.scope || null,
+                district: area || null,
+                expected_value: +data.value || 0,
+                close_date: data.closeDate || null,
+                contact_id: contact_id || null,
+                org_id: org_id || null,
               });
+              // 5) Move to the chosen stage if it isn't Prospect.
+              const stg = (data.stage || 'prospect');
+              const stageCap = stg.charAt(0).toUpperCase() + stg.slice(1);
+              if (created && created.id && stageCap !== 'Prospect') {
+                await window.api.post(`/opportunities/${created.id}/stage`, { to_stage: stageCap }).catch(() => {});
+              }
+              // 6) Reload the board so the real, persisted deal appears.
+              const rows = await window.api.get('/opportunities').catch(() => null);
+              if (Array.isArray(rows)) setDeals(rows.map(adaptOppFromApi));
+              closeModal();
+              fireToast(fired.length
+                ? `Created deal "${data.name}" + new ${fired.join(' + ')}`
+                : `Created deal "${data.name}"`);
+            } catch (e) {
+              fireToast((e && e.message) || 'Could not create the deal.');
             }
-            // 2) If contact isn't linked to an existing contact, create one.
-            let contactId = data.contactId;
-            if (!contactId && data.contactName) {
-              const cNum = (window.CONTACTS || []).length + 1;
-              contactId = 'C' + String(cNum + 100).padStart(3, '0');
-              const newContact = {
-                id: contactId, name: data.contactName, role: data.contactRole || '',
-                company: data.account, orgId,
-                phoneWork: '', phoneMobile: data.contactPhone || '',
-                emailWork: data.contactEmail || '', emailPersonal: '',
-                city: 'Amman', primary: false, owner: data.owner, notes: '',
-                status: 'active',
-                email: data.contactEmail || '',
-                phone: data.contactPhone || '',
-                tags: [], lastContact: '',
-              };
-              window.CONTACTS.push(newContact);
-            }
-            // 3) Build the deal.
-            const nextNum = (window.DEALS || []).length + 1;
-            const newId = 'OPP' + String(nextNum + 100).padStart(3, '0');
-            const ownerUser = (window.USERS || []).find(u => u.name === data.owner);
-            const fired = [];
-            if (!data.orgId)     fired.push(`account "${data.account}"`);
-            if (!data.contactId) fired.push(`contact "${data.contactName}"`);
-            setDeals(ds => [{
-              id: newId, name: data.name,
-              account: data.account, orgId,
-              contactId, contactName: data.contactName, contactRole: data.contactRole,
-              value: +data.value || 0,
-              stage: data.stage,
-              status: 'Active',
-              owner: data.owner, ownerId: ownerUser ? ownerUser.id : null,
-              probability: data.probability,
-              scope: data.scope,
-              closeDate: data.closeDate || null,
-              closeQuarter: data.closeQuarter || null,
-              age: 0,
-            }, ...ds]);
-            closeModal();
-            fireToast(fired.length
-              ? `Created deal "${data.name}" + new ${fired.join(' + ')}`
-              : `Created deal "${data.name}"`);
           }}
         />
       )}

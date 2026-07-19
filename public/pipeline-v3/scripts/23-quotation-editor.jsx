@@ -82,9 +82,13 @@ function QuotationEditor() {
   }, [request, versionNumber, meName]);
   const setHdr = useCallback((k, v) => setHeader(h => h ? { ...h, [k]: v } : h), []);
 
-  // ─── Discount (capped 0–30%) ───────────────────────────────────────────
+  // ─── Discount. Above the limit raises a manager-approval request. ───────
   const [discountPct, setDiscountPct] = useState(0);
-  const discountFraction = Math.max(0, Math.min(30, Number(discountPct) || 0)) / 100;
+  const discountFraction = Math.max(0, Math.min(99, Number(discountPct) || 0)) / 100;
+  // Over-limit approval request surfaced by the server (needs_approval).
+  const [approval,  setApproval]  = useState(null);   // { opp_id, quotation_id, requested_pct }
+  const [apprNote,  setApprNote]  = useState('');
+  const [apprState, setApprState] = useState(null);   // 'sending' | 'sent'
 
   // ─── Target release stage (designer picks at submit time) ──────────────
   const [targetRelease, setTargetRelease] = useState('');
@@ -229,14 +233,14 @@ function QuotationEditor() {
   const setLineDiscount = (i, pct) => {
     setLineItems(items => items.map((it, j) => {
       if (j !== i) return it;
-      const d = Math.max(0, Math.min(0.30, (+pct || 0) / 100));
+      const d = Math.max(0, Math.min(0.99, (+pct || 0) / 100));
       const unit_price = it.list_price ? +(it.list_price * (1 - d)).toFixed(2) : it.unit_price;
       return { ...it, discount_pct: d, unit_price };
     }));
   };
   const applyCategoryBulk = () => {
     if (!categoryBulk.category) return;
-    const d = Math.max(0, Math.min(0.30, (+categoryBulk.pct || 0) / 100));
+    const d = Math.max(0, Math.min(0.99, (+categoryBulk.pct || 0) / 100));
     setLineItems(items => items.map(it => {
       if (it.category !== categoryBulk.category) return it;
       const unit_price = it.list_price ? +(it.list_price * (1 - d)).toFixed(2) : it.unit_price;
@@ -256,10 +260,29 @@ function QuotationEditor() {
     setUploadName('');
   };
 
+  // Raise the over-limit discount approval request for a sales manager.
+  const requestApproval = async () => {
+    if (!approval) return;
+    setApprState('sending');
+    try {
+      await window.api.post('/approvals', {
+        opp_id: approval.opp_id,
+        quotation_id: approval.quotation_id,
+        requested_pct: approval.requested_pct,
+        notes: apprNote.trim() || null,
+      });
+      setApprState('sent'); setError(null);
+    } catch (e) {
+      setApprState(null);
+      setError(e?.message || 'Could not send the approval request.');
+    }
+  };
+
   const submit = async () => {
     if (!canSubmit || submitting) return;
     setSubmitting(true);
     setError(null);
+    setApproval(null);
     try {
       if (salesMode) {
         // Sales revision: per-line discounts, posted to /sales-revision.
@@ -290,8 +313,12 @@ function QuotationEditor() {
       await window.api.put(`/design-requests/${requestId}/stage`, { stage: 'Review' });
       window.location.href = 'MyTasks.html';
     } catch (e) {
-      // sales-revision returns 400 with over_cap for >30% lines — render readably.
-      if (e?.data?.over_cap) {
+      if (e?.data?.needs_approval) {
+        // Over the limit — offer the manager-approval request (same flow as the deal page).
+        setApproval({ opp_id: e.data.opp_id, quotation_id: e.data.quotation_id, requested_pct: e.data.requested_pct });
+        setApprState(null); setApprNote('');
+        setError(e.data.error);
+      } else if (e?.data?.over_cap) {
         const lines = e.data.over_cap.map(o => `${o.model} → ${(o.requested_pct * 100).toFixed(1)}%`).join('; ');
         setError(`${e.data.error} Lines over cap: ${lines}`);
       } else {
@@ -351,6 +378,31 @@ function QuotationEditor() {
         <div style={{ padding: 12, background: 'var(--color-danger-bg)', color: '#B0241D', borderRadius: 7, fontSize: 12.5, marginBottom: 14 }}>{error}</div>
       )}
 
+      {approval && apprState === 'sent' && (
+        <div style={{ padding: 12, background: 'var(--img-green-50, #ECFAF1)', color: 'var(--img-green-700, #1F7A3D)', border: '1px solid var(--img-green-200, #B7E1C4)', borderRadius: 7, fontSize: 12.5, marginBottom: 14 }}>
+          Approval requested for {approval.requested_pct}% — a sales manager will review it. Once approved, submit again to apply the discount.
+        </div>
+      )}
+
+      {approval && apprState !== 'sent' && (
+        <div style={{ padding: 14, background: 'var(--img-orange-50, #FEF7EC)', border: '1px solid var(--img-orange-200, #F5C77E)', borderRadius: 7, marginBottom: 14 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--img-orange-700, #B8680E)', marginBottom: 8 }}>
+            {approval.requested_pct}% exceeds the discount limit — request sales-manager approval
+          </div>
+          <textarea value={apprNote} onChange={e => setApprNote(e.target.value)} rows={2}
+            placeholder="Note for the approver (optional) — e.g. why this discount is needed"
+            style={{ width: '100%', padding: '8px 10px', fontSize: 12.5, fontFamily: 'inherit', borderRadius: 6, border: '1px solid var(--border-default)', resize: 'vertical', boxSizing: 'border-box' }} />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
+            <button onClick={() => { setApproval(null); setError(null); }} disabled={apprState === 'sending'}
+              style={{ padding: '7px 14px', borderRadius: 6, fontSize: 12.5, fontWeight: 600, background: 'var(--bg-surface)', color: 'var(--fg-primary)', border: '1px solid var(--border-default)', cursor: 'pointer' }}>Cancel</button>
+            <button onClick={requestApproval} disabled={apprState === 'sending'}
+              style={{ padding: '7px 16px', borderRadius: 6, fontSize: 12.5, fontWeight: 700, background: 'var(--img-orange)', color: '#fff', border: '1px solid var(--img-orange)', cursor: apprState === 'sending' ? 'wait' : 'pointer' }}>
+              {apprState === 'sending' ? 'Sending…' : 'Request approval'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Header section */}
       <div style={sectionStyle}>
         <div style={sectionTitle}>Quotation header — shown on customer PDF</div>
@@ -386,8 +438,8 @@ function QuotationEditor() {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
           <label style={labelStyle}>
             <span>Sales discount (%) · internal only — customer sees only "Discount Applied"</span>
-            <input type="number" min="0" max="30" step="0.5"
-              value={discountPct} onChange={e => setDiscountPct(Math.max(0, Math.min(30, Number(e.target.value) || 0)))}
+            <input type="number" min="0" max="99" step="0.5"
+              value={discountPct} onChange={e => setDiscountPct(Math.max(0, Math.min(99, Number(e.target.value) || 0)))}
               style={fieldStyle} />
           </label>
           {!salesMode && (
@@ -440,7 +492,7 @@ function QuotationEditor() {
               <option value="">— pick category —</option>
               {inUseCategories.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
-            <input type="number" min="0" max="30" step="0.5" placeholder="%"
+            <input type="number" min="0" max="99" step="0.5" placeholder="%"
               value={categoryBulk.pct} onChange={e => setCategoryBulk({ ...categoryBulk, pct: e.target.value })}
               style={{ width: 70, padding: '5px 8px', fontSize: 12, border: '1px solid var(--border-default)', borderRadius: 5, textAlign: 'right' }} />
             <button onClick={applyCategoryBulk} disabled={!categoryBulk.category}
@@ -506,11 +558,11 @@ function QuotationEditor() {
                   <input type="number" min="0" value={it.qty} onChange={e => patchItem(i, { qty: e.target.value })} style={{ ...cell, textAlign: 'right' }} />
                 )}
                 {salesMode && (
-                  <input type="number" min="0" max="30" step="0.5"
+                  <input type="number" min="0" max="99" step="0.5"
                     value={+((it.discount_pct || 0) * 100).toFixed(2)}
                     onChange={e => setLineDiscount(i, e.target.value)}
                     style={{ ...cell, textAlign: 'right', background: (it.discount_pct || 0) > 0 ? 'var(--img-orange-50)' : cell.background }}
-                    title="Sales discount % for this line (max 30%, server caps)" />
+                    title="Sales discount % for this line. Above the limit needs manager approval." />
                 )}
                 {salesMode ? (
                   <span className="t-num" style={{ padding: '6px 8px', textAlign: 'right', fontSize: 12 }}>{window.formatJOD ? window.formatJOD(it.unit_price).replace('JOD ', '') : it.unit_price}</span>

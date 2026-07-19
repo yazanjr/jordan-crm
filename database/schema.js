@@ -82,6 +82,50 @@ module.exports = function applySchema(db) {
       is_active INTEGER DEFAULT 1
     );
 
+    -- Managed list of project locations / areas (Amman neighbourhoods). Backs the
+    -- opportunity "Project Location" (district) picker + filter. Grows when a
+    -- salesman types a new area in the New Deal form (search-or-create).
+    CREATE TABLE IF NOT EXISTS areas (
+      id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      name      TEXT NOT NULL UNIQUE,
+      is_active INTEGER DEFAULT 1
+    );
+
+    -- ── Project (diagnostic layer, H1 market access) ────────────────────────
+    -- A piece of construction in the MARKET that needs HVAC. Exists whether or
+    -- not we pursue it. One Project → zero..many Deals (opportunities.project_id).
+    -- Deliberately distinct from opportunities (our pursuit) and from
+    -- design_requests.project_type (a design-work-type enum, unrelated).
+    -- Note the event-vs-awareness date pairs: what happened vs when we learned it.
+    CREATE TABLE IF NOT EXISTS projects (
+      id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+      name                      TEXT NOT NULL,
+      client_contact_id         INTEGER REFERENCES contacts(id),
+      client_free_text          TEXT,
+      mep_consultant_contact_id INTEGER REFERENCES contacts(id),
+      awarding_party            TEXT,
+      estimated_hvac_value      REAL,
+      awareness_stage           TEXT CHECK (awareness_stage IS NULL OR awareness_stage IN
+                                  ('unaware','aware-late','aware-early','involved-in-spec')),
+      source                    TEXT CHECK (source IS NULL OR source IN
+                                  ('consultant relationship','contractor relationship','public tender','referral','walk-in','unknown')),
+      outcome                   TEXT DEFAULT 'pending' CHECK (outcome IS NULL OR outcome IN
+                                  ('pending','won by us','lost to competitor','cancelled','unknown')),
+      winning_competitor        TEXT,
+      pursued                   INTEGER DEFAULT 1,
+      not_pursued_reason        TEXT,
+      -- Event dates (what happened) vs awareness dates (when we learned it).
+      date_awareness_gained     TEXT,
+      date_spec_locked          TEXT,
+      date_awarded              TEXT,
+      date_outcome_learned      TEXT,
+      created_by                INTEGER REFERENCES users(id),
+      created_at                TEXT DEFAULT (datetime('now')),
+      updated_at                TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_projects_outcome   ON projects(outcome);
+    CREATE INDEX IF NOT EXISTS idx_projects_awareness ON projects(awareness_stage);
+
     CREATE TABLE IF NOT EXISTS opportunities (
       id               INTEGER PRIMARY KEY AUTOINCREMENT,
       title            TEXT NOT NULL,
@@ -302,6 +346,11 @@ module.exports = function applySchema(db) {
   // because SQLite has no "ADD COLUMN IF NOT EXISTS".
   function addColumnIfMissing(table, column, definition) {
     const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+    // Guard: on a FRESH database some migrations below run before their table is
+    // created further down this file. PRAGMA returns [] for a missing table, which
+    // used to fall through to an ALTER on a non-existent table and crash the boot.
+    // Skipping is safe — any table created later already declares these columns.
+    if (cols.length === 0) return;
     if (!cols.some(c => c.name === column)) {
       db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
     }
@@ -365,6 +414,67 @@ module.exports = function applySchema(db) {
   addColumnIfMissing('opportunities', 'closed_at', `TEXT`);
   addColumnIfMissing('opportunities', 'closed_by', `INTEGER REFERENCES users(id)`);
   addColumnIfMissing('activities',    'done_at',   `TEXT`);
+
+  // ─── Diagnostic reporting layer (H1 access · H2 discount · H3 retention · H4 capacity) ───
+  // All additive. CHECKs allow NULL so pre-existing rows stay valid and updatable.
+  // Revenue model decision: there is no Invoice entity — a "revenue event" is a Won
+  // opportunity (closed_at = date, signing_price = amount, org_id = customer).
+
+  // A. Account (organizations). first/last purchase, lifetime revenue and silent_since
+  //    are DERIVED on read from Won deals — deliberately NOT stored (no sync bugs).
+  addColumnIfMissing('organizations', 'account_code',          `TEXT`);
+  addColumnIfMissing('organizations', 'customer_type',         `TEXT CHECK (customer_type IS NULL OR customer_type IN
+    ('one-time project buyer','repeat institutional','mechanical contractor','residential','internal/owner-related','other'))`);
+  addColumnIfMissing('organizations', 'is_internal',           `INTEGER DEFAULT 0`);   // excluded from every report by default
+  addColumnIfMissing('organizations', 'churn_reason',          `TEXT CHECK (churn_reason IS NULL OR churn_reason IN
+    ('price','competitor','project pipeline dried up','quality/service','relationship lost','moved in-house','went silent - unknown','other'))`);
+  addColumnIfMissing('organizations', 'churn_reason_note',     `TEXT`);
+  addColumnIfMissing('organizations', 'churn_reason_set_at',   `TEXT`);
+  addColumnIfMissing('organizations', 'churn_reason_set_by',   `INTEGER REFERENCES users(id)`);
+  // Stable identifier, distinct from name. Unique index (ALTER can't add a UNIQUE constraint).
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_orgs_account_code ON organizations(account_code) WHERE account_code IS NOT NULL;`); } catch (e) { /* optional */ }
+  // Give existing accounts a code so the field is usable immediately (ACC-0001…).
+  const orgsNeedingCode = db.prepare(`SELECT id FROM organizations WHERE account_code IS NULL ORDER BY id`).all();
+  if (orgsNeedingCode.length) {
+    const setCode = db.prepare(`UPDATE organizations SET account_code = ? WHERE id = ?`);
+    for (const o of orgsNeedingCode) setCode.run('ACC-' + String(o.id).padStart(4, '0'), o.id);
+  }
+
+  // B. Contact — per-PERSON profession/influence. (deal_contacts.role stays the per-DEAL role.)
+  addColumnIfMissing('contacts', 'role',           `TEXT CHECK (role IS NULL OR role IN
+    ('MEP consultant','civil contractor','mechanical contractor','client-side decision maker','client-side technical','government procurement','other'))`);
+  addColumnIfMissing('contacts', 'influence_tier', `TEXT CHECK (influence_tier IS NULL OR influence_tier IN ('high','medium','low'))`);
+  addColumnIfMissing('contacts', 'key_target',     `INTEGER DEFAULT 0`);   // top-N influencer watchlist (report 8)
+
+  // C. Deal → Project link (NULL = residential / direct sale, by design) + win reason.
+  addColumnIfMissing('opportunities', 'project_id', `INTEGER REFERENCES projects(id)`);
+  addColumnIfMissing('opportunities', 'won_reason', `TEXT CHECK (won_reason IS NULL OR won_reason IN
+    ('price','product fit','delivery time','relationship','spec locked to us','incumbent','other'))`);
+  addColumnIfMissing('opportunities', 'won_note',   `TEXT`);
+
+  // D. Stage transitions must carry a reason (Phase 5 principle #1). Until now
+  //    stage_history had NO reason column — design.js even passed one and it was dropped.
+  addColumnIfMissing('stage_history', 'reason',      `TEXT`);
+  addColumnIfMissing('stage_history', 'reason_note', `TEXT`);
+
+  // E. Salesman lifecycle (H4). `is_active` is an undated boolean and stays for
+  //    back-compat; `status` + dates are the reporting source of truth.
+  addColumnIfMissing('users', 'status',           `TEXT CHECK (status IS NULL OR status IN ('active','inactive','departed'))`);
+  addColumnIfMissing('users', 'hire_date',        `TEXT`);
+  addColumnIfMissing('users', 'departure_date',   `TEXT`);
+  addColumnIfMissing('users', 'departure_reason', `TEXT CHECK (departure_reason IS NULL OR departure_reason IN
+    ('resigned','terminated','transferred','retired','other'))`);
+  addColumnIfMissing('users', 'departure_note',   `TEXT`);
+  // One-time sync of current state from the legacy boolean (not a history backfill —
+  // we cannot know WHEN anyone joined or left; report 14 accrues from today forward).
+  db.prepare(`UPDATE users SET status = CASE WHEN COALESCE(is_active, 1) = 1 THEN 'active' ELSE 'inactive' END WHERE status IS NULL`).run();
+
+  // F. Activity — add the Project dimension (opp/contact/org already exist).
+  addColumnIfMissing('activities', 'project_id', `INTEGER REFERENCES projects(id)`);
+
+  // G. Discount approvals — the approver's note currently OVERWRITES the requester's
+  //    rationale (single `notes` column, two authors). Split them so H2 keeps its evidence.
+  addColumnIfMissing('discount_approvals', 'response_note', `TEXT`);
 
   // ─── Sales targets (2026-06-02) — drive the dashboard target gauges. ───────
   // One row per (scope, salesman_id, year). scope='company' → salesman_id NULL.
@@ -434,9 +544,12 @@ module.exports = function applySchema(db) {
   } else {
     defaultBookId = defaultBook.id;
   }
-  // Backfill old rows that have no book yet.
-  db.prepare(`UPDATE pricelist_versions SET price_book_id = ? WHERE price_book_id IS NULL AND brand = 'Gree'`).run(defaultBookId);
-  db.prepare(`UPDATE product_skus       SET price_book_id = ? WHERE price_book_id IS NULL AND brand = 'Gree'`).run(defaultBookId);
+  // Backfill old rows that have no book yet. Guarded: on a FRESH database these two
+  // tables are created further down this file, and there is nothing to backfill anyway.
+  try {
+    db.prepare(`UPDATE pricelist_versions SET price_book_id = ? WHERE price_book_id IS NULL AND brand = 'Gree'`).run(defaultBookId);
+    db.prepare(`UPDATE product_skus       SET price_book_id = ? WHERE price_book_id IS NULL AND brand = 'Gree'`).run(defaultBookId);
+  } catch (e) { /* fresh DB — tables not created yet, no rows to backfill */ }
 
   // ── Designer-released workflow (Phase 8.1) ────────────────────────────────
   // Designer pre-picks where the released quote goes (Tender / Analysis) at
@@ -489,7 +602,8 @@ module.exports = function applySchema(db) {
       extra_multi_pct       REAL DEFAULT 0,
       sales_tax_pct         REAL DEFAULT 0,
       is_active             INTEGER DEFAULT 1,   -- 1 = the live pricelist for that brand
-      notes                 TEXT
+      notes                 TEXT,
+      price_book_id         INTEGER REFERENCES price_books(id)   -- declared here for FRESH DBs; existing DBs get it via ALTER above
     );
 
     -- Catalogue. One row per SKU. Cost columns are PM-only on the API layer.
@@ -520,7 +634,8 @@ module.exports = function applySchema(db) {
       max_mgr_discount_pct     REAL DEFAULT 0.40,
       active                   INTEGER DEFAULT 1,
       created_at               TEXT DEFAULT (datetime('now')),
-      updated_at               TEXT DEFAULT (datetime('now'))
+      updated_at               TEXT DEFAULT (datetime('now')),
+      price_book_id            INTEGER REFERENCES price_books(id)   -- declared here for FRESH DBs; existing DBs get it via ALTER above
     );
     CREATE INDEX IF NOT EXISTS idx_skus_category ON product_skus(category, active);
     CREATE INDEX IF NOT EXISTS idx_skus_model    ON product_skus(model);
@@ -565,11 +680,18 @@ module.exports = function applySchema(db) {
       opportunity_id INTEGER NOT NULL REFERENCES opportunities(id) ON DELETE CASCADE,
       contact_id     INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
       role           TEXT NOT NULL,
+      created_at     TEXT,                          -- declared here for FRESH DBs; existing DBs get it via ALTER above
       PRIMARY KEY (opportunity_id, contact_id, role)
     );
     CREATE INDEX IF NOT EXISTS idx_deal_contacts_contact ON deal_contacts(contact_id);
     CREATE INDEX IF NOT EXISTS idx_deal_contacts_opp     ON deal_contacts(opportunity_id);
   `);
+
+  // ── Seed the areas list (Amman + neighbourhoods) once, in display order. ──
+  // INSERT OR IGNORE keeps the UNIQUE(name) rows idempotent across restarts.
+  const seedAreas = ['Amman', 'دابوق', 'عبدون', 'الكرسي', 'الحمر', 'خلدا', 'أم أذينة', 'طريق المطار'];
+  const insertArea = db.prepare(`INSERT OR IGNORE INTO areas (name) VALUES (?)`);
+  for (const a of seedAreas) insertArea.run(a);
 
   // ── Indexes ────────────────────────────────────────────────────────────────
   db.exec(`

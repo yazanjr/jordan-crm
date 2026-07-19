@@ -74,40 +74,70 @@ function ReportsApp() {
   const dealsReady = dealsState !== null;
   const deals = dealsState || [];
 
-  // ---- Filter dimensions. Each entry: [dealKey, label, isStage]. Options are
-  //      derived live from the loaded deals (stage uses the canonical order). ----
-  const FILTER_GROUPS_META = [
-    ['owner',    'Salesman',                false],
-    ['scope',    'Product',                 false],
+  // Managed project-location list (for the Location filter). Curated, not data-derived.
+  const [areasList, setAreasList] = useState(window.AREAS || []);
+  useEffect(() => {
+    window.api.get('/opportunities/meta/areas')
+      .then(a => { if (Array.isArray(a)) { window.AREAS = a; setAreasList(a); } })
+      .catch(() => {});
+  }, []);
+
+  // Design requests (role-scoped) — flat per-request rows from /design-performance.
+  const [designState, setDesignState] = useState(null);
+  useEffect(() => {
+    window.api.get('/design-performance')
+      .then(r => setDesignState(r || { scope: 'per_designer', requests: [] }))
+      .catch(e => setDesignState({ scope: e?.status === 403 ? 'forbidden' : 'error', requests: [] }));
+  }, []);
+  const designReady = designState !== null;
+  const designReqs = (designState && designState.requests) || [];
+  const designScope = designState && designState.scope;
+
+  // ---- Filter dimensions, per tab. Each entry: [key, label, isStage]. ----
+  const DEAL_FILTER_GROUPS = [
+    ['owner',    'Salesman',                 false],
+    ['scope',    'Product',                  false],
     ['quarter',  'Expected closing quarter', false],
-    ['stage',    'Stage',                   true ],
-    ['status',   'Status',                  false],
-    ['system',   'System',                  false],
-    ['brand',    'Brand',                   false],
-    ['segment',  'Sector',                  false],
-    ['district', 'Location',                false],
+    ['stage',    'Stage',                    true ],
+    ['status',   'Status',                   false],
+    ['system',   'System',                   false],
+    ['brand',    'Brand',                    false],
+    ['segment',  'Sector',                   false],
+    ['district', 'Location',                 false],
   ];
+  const DESIGN_FILTER_GROUPS = [
+    ['designer_name', 'Designer', false],
+    ['system',        'System',   false],
+    ['urgency',       'Urgency',  false],
+    ['design_stage',  'Status',   false],
+  ];
+  const isDesignTab = activeTab === 'design';
+  const FILTER_GROUPS_META = isDesignTab ? DESIGN_FILTER_GROUPS : DEAL_FILTER_GROUPS;
+  const filterSource = isDesignTab ? designReqs : deals;
+
   const filterOptions = useMemo(() => {
     const out = {};
     FILTER_GROUPS_META.forEach(([key]) => {
       if (key === 'stage') { out[key] = (window.STAGE_ORDER || []).slice(); return; }
+      if (key === 'district') { out[key] = (areasList || []).slice(); return; }  // curated area list, not data-derived
       const seen = new Set();
-      deals.forEach(d => { const v = d[key]; if (v != null && v !== '') seen.add(v); });
+      filterSource.forEach(d => { const v = d[key]; if (v != null && v !== '') seen.add(v); });
       out[key] = [...seen].sort((a, b) => String(a).localeCompare(String(b)));
     });
     return out;
-  }, [deals]);
+  }, [filterSource, isDesignTab, areasList]);
   // FilterPopover group config (adds the live options per group).
   const filterGroups = FILTER_GROUPS_META.map(([key, label, isStage]) => [key, label, filterOptions[key] || [], isStage]);
 
-  // Active tab's deals after applying its filters (client-side, like the pipeline).
-  const filteredDeals = useMemo(() => {
-    let list = deals;
-    FILTER_GROUPS_META.forEach(([key]) => {
-      if (filters[key]?.length) list = list.filter(d => filters[key].includes(d[key]));
-    });
-    return list;
-  }, [deals, filters]);
+  // Generic client-side filter applier. Only one tab renders at a time, so the
+  // active tab's `filters` drives whichever dataset that tab shows.
+  const applyFilters = (list, groups, f) => {
+    let out = list;
+    groups.forEach(([key]) => { if (f[key]?.length) out = out.filter(d => f[key].includes(d[key])); });
+    return out;
+  };
+  const filteredDeals = useMemo(() => applyFilters(deals, DEAL_FILTER_GROUPS, filters), [deals, filters]);
+  const filteredDesignReqs = useMemo(() => applyFilters(designReqs, DESIGN_FILTER_GROUPS, filters), [designReqs, filters]);
 
   // When the Salesman filter narrows to exactly one person, drive the merged
   // sales scorecard's drill-in to that person.
@@ -213,7 +243,7 @@ function ReportsApp() {
           ]}
           activeTab={activeTab}
           onTab={setActiveTab}
-          right={activeTab === 'design' ? null : (
+          right={
             <button style={{ ...tbBtn, gap: 6 }}
               onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
               onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
@@ -223,12 +253,14 @@ function ReportsApp() {
                 <span style={{ background: 'var(--img-orange)', color: '#fff', fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 999 }}>{activeFilterCount}</span>
               )}
             </button>
-          )}
+          }
           showBreadcrumbs={true}
         />
 
         <div style={{ flex: 1, overflowY: 'auto', background: 'var(--bg-page)' }}>
-          {activeTab === 'design' ? <DesignTab />
+          {activeTab === 'design'
+            ? (!designReady ? <div style={{ padding: 40, textAlign: 'center', color: 'var(--fg-tertiary)' }}>Loading…</div>
+               : <DesignTab requests={filteredDesignReqs} scope={designScope} />)
             : !dealsReady ? <div style={{ padding: 40, textAlign: 'center', color: 'var(--fg-tertiary)' }}>Loading…</div>
             : activeTab === 'overview' ? <OverviewTab stats={stats} byStage={byStage} byOwner={byOwner} scopeBreakdown={scopeBreakdown} deals={filteredDeals} targets={targets} canEditTargets={canEditTargets} onTargetsSaved={reloadTargets} selectedSalesmen={selectedSalesmen} />
             : activeTab === 'pipeline' ? <PipelineTab byStage={byStage} deals={filteredDeals} />
@@ -458,8 +490,8 @@ function PipelineTab({ byStage, deals }) {
         ))}
       </div>
 
-      <Card title="Conversion funnel" subtitle="Deal counts across stages">
-        <ConvFunnel byStage={byStage} />
+      <Card title="Pipeline conversion" subtitle="How many deals reach each stage — and where they drop off">
+        <ConversionFunnel deals={deals} />
       </Card>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 16 }}>
@@ -747,89 +779,249 @@ function fmtDuration(min) {
   return Math.round(min) + ' m';
 }
 
-function DesignTab() {
-  const [data, setData]      = useState(null);
-  const [error, setError]    = useState(null);
+// Stage order for workload/queue visualisations.
+const DESIGN_STAGE_ORDER = ['Incoming', 'Queued', 'In Progress', 'Review', 'On Hold', 'Approved', 'Released', 'Cancelled'];
+const URGENCY_COLORS = { Standard: 'var(--stage-tender, #4C8DFF)', Urgent: 'var(--img-orange, #F0A028)', Critical: '#D64545' };
+
+// Aggregate the flat request rows into per-designer scorecards (client-side).
+function aggregateDesigners(reqs) {
+  const map = {};
+  reqs.forEach(r => {
+    const m = map[r.designer_id] || (map[r.designer_id] = {
+      id: r.designer_id, name: r.designer_name, completed: 0, active: 0, overdue: 0,
+      onTimeNum: 0, onTimeDen: 0, queueSum: 0, designSum: 0, reviewSum: 0, turnSum: 0,
+      revised: 0, firstTime: 0, estReqs: 0, estRatioSum: 0,
+    });
+    if (r.completed) {
+      m.completed++;
+      m.queueSum += r.queue_min; m.designSum += r.design_min; m.reviewSum += r.review_min; m.turnSum += r.turnaround_min;
+      if (r.was_revised) m.revised++; else m.firstTime++;
+      if (r.on_time === true) { m.onTimeNum++; m.onTimeDen++; } else if (r.on_time === false) { m.onTimeDen++; }
+      if (r.estimated_hours && r.design_min) { m.estRatioSum += (r.design_min / 60) / r.estimated_hours; m.estReqs++; }
+    } else {
+      m.active++;
+      if (r.overdue) m.overdue++;
+    }
+  });
+  return Object.values(map).map(m => ({
+    ...m,
+    avg_queue:  m.completed ? Math.round(m.queueSum / m.completed) : 0,
+    avg_design: m.completed ? Math.round(m.designSum / m.completed) : 0,
+    avg_review: m.completed ? Math.round(m.reviewSum / m.completed) : 0,
+    avg_turn:   m.completed ? Math.round(m.turnSum / m.completed) : 0,
+    revision_rate:   m.completed ? m.revised / m.completed : 0,
+    first_time_rate: m.completed ? m.firstTime / m.completed : 0,
+    on_time_rate:    m.onTimeDen ? m.onTimeNum / m.onTimeDen : null,
+    est_accuracy:    m.estReqs ? m.estRatioSum / m.estReqs : null,
+  }));
+}
+
+function DesignTab({ requests = [], scope }) {
   const [selectedId, setSel] = useState(null);
 
-  useEffect(() => {
-    window.api.get('/design-performance')
-      .then(setData)
-      .catch(e => setError(e?.status === 403 ? 'forbidden' : (e?.message || 'Could not load report.')));
-  }, []);
-
-  if (error === 'forbidden') {
+  if (scope === 'forbidden') {
     return <div style={{ padding: 40, textAlign: 'center', color: 'var(--fg-tertiary)', fontSize: 13 }}>
       The designer performance report is for design management.
     </div>;
   }
-  if (error) return <div style={{ padding: 24, color: '#B0241D', fontSize: 13 }}>{error}</div>;
-  if (!data) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--fg-tertiary)' }}>Loading…</div>;
+  if (scope === 'error') return <div style={{ padding: 24, color: '#B0241D', fontSize: 13 }}>Could not load the design report.</div>;
 
-  const { scope, designers } = data;
+  const designers = aggregateDesigners(requests);
 
+  // Self view (a designer) or a drilled-in designer → individual scorecard.
   if (scope === 'self' || selectedId != null) {
-    const d = scope === 'self' ? designers[0] : designers.find(x => x.id === selectedId);
-    if (!d) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--fg-tertiary)' }}>No data for this designer yet.</div>;
+    const id = scope === 'self' ? (designers[0] && designers[0].id) : selectedId;
+    const d = designers.find(x => x.id === id);
+    const theirReqs = requests.filter(r => r.designer_id === id);
+    if (!d) return <div style={{ padding: 24 }}><NoHistory>No design requests for this designer yet.</NoHistory></div>;
     return (
       <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
-        {scope === 'per_designer' && (
+        {scope !== 'self' && (
           <button onClick={() => setSel(null)} style={{ alignSelf: 'flex-start', background: 'none', border: 'none', color: 'var(--fg-secondary)', fontSize: 13, fontWeight: 600, cursor: 'pointer', padding: 0 }}>← Back to team</button>
         )}
-        <DesignerScorecard d={d} />
+        <DesignerScorecard d={d} reqs={theirReqs} />
       </div>
     );
   }
 
+  // Team / department view.
   return (
-    <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <Card title="Designer performance" subtitle="All-time · click a row for the full scorecard">
+    <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <DesignDepartment requests={requests} designers={designers} />
+      <Card title="Designer performance" subtitle="Click a row for the full scorecard">
         <DesignComparison rows={designers} onPick={setSel} />
       </Card>
     </div>
   );
 }
 
-function DesignerScorecard({ d }) {
+// Department-level overview: KPIs + the diagnostic charts.
+function DesignDepartment({ requests, designers }) {
+  const active = requests.filter(r => r.active);
+  const completed = requests.filter(r => r.completed);
+  const now = new Date();
+  const releasedThisMonth = completed.filter(r => r.released_at &&
+    new Date(r.released_at).getFullYear() === now.getFullYear() &&
+    new Date(r.released_at).getMonth() === now.getMonth()).length;
+  const onTimeDen = completed.filter(r => r.on_time !== null);
+  const onTimeRate = onTimeDen.length ? onTimeDen.filter(r => r.on_time === true).length / onTimeDen.length : null;
+  const avgQueue = completed.length ? Math.round(completed.reduce((s, r) => s + r.queue_min, 0) / completed.length) : 0;
+  const queueDepth = active.filter(r => r.design_stage === 'Incoming' || r.design_stage === 'Queued').length;
+  const overdue = active.filter(r => r.overdue).length;
+  const valueWaiting = active.reduce((s, r) => s + (r.deal_value || 0), 0);
+
+  // Workload by stage (active only).
+  const workload = DESIGN_STAGE_ORDER
+    .map(st => ({ label: st, value: active.filter(r => r.design_stage === st).length }))
+    .filter(x => x.value > 0);
+
+  // Throughput — released per month, last 6 months.
+  const throughput = (() => {
+    const buckets = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      buckets.push({ key: `${d.getFullYear()}-${d.getMonth()}`, label: d.toLocaleString('en', { month: 'short' }), value: 0 });
+    }
+    const idx = Object.fromEntries(buckets.map((b, i) => [b.key, i]));
+    completed.forEach(r => {
+      if (!r.released_at) return;
+      const d = new Date(r.released_at); const k = `${d.getFullYear()}-${d.getMonth()}`;
+      if (k in idx) buckets[idx[k]].value += 1;
+    });
+    return buckets;
+  })();
+
+  // Where time goes — department average across completed (minutes).
+  const n = completed.length || 1;
+  const timeSplit = [
+    { label: 'Queue wait', value: Math.round(completed.reduce((s, r) => s + r.queue_min, 0) / n), color: 'var(--stage-prospect, #64748B)' },
+    { label: 'Design',     value: Math.round(completed.reduce((s, r) => s + r.design_min, 0) / n), color: 'var(--stage-tender, #4C8DFF)' },
+    { label: 'Review',     value: Math.round(completed.reduce((s, r) => s + r.review_min, 0) / n), color: 'var(--img-orange, #F0A028)' },
+    { label: 'On hold',    value: Math.round(completed.reduce((s, r) => s + r.hold_min, 0) / n), color: '#D64545' },
+  ].filter(s => s.value > 0);
+
+  // Load by designer (active count).
+  const loadByDesigner = designers
+    .map(d => ({ label: d.name, value: d.active })).filter(x => x.value > 0)
+    .sort((a, b) => b.value - a.value);
+
+  // Mix by system & urgency (counts).
+  const bySystem = countBy(requests, 'system');
+  const byUrgency = countBy(requests, 'urgency', URGENCY_COLORS);
+
+  return (
+    <>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
+        <KPI label="Active WIP" value={active.length} sub={`${queueDepth} waiting in queue`} accent="orange" />
+        <KPI label="Overdue" value={overdue} sub={overdue ? 'Past due date' : 'None past due'} accent={overdue ? 'orange' : 'green'} />
+        <KPI label="Released this month" value={releasedThisMonth} sub={`${completed.length} completed all-time`} accent="green" />
+        <KPI label="On-time delivery" value={onTimeRate == null ? '—' : pctFmt(onTimeRate)} sub={onTimeRate == null ? 'No due-dated completions' : `${onTimeDen.length} with a due date`} accent="green" />
+        <KPI label="Avg queue wait" value={fmtDuration(avgQueue)} sub="Before work starts" />
+        <KPI label="Value waiting on design" value={fmtShort(valueWaiting)} sub={`${active.length} active requests`} accent="orange" />
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <Card title="Workload by stage" subtitle="Where active requests sit right now">
+          {workload.length === 0 ? <NoHistory>No active requests.</NoHistory> : <BarChart data={workload} color="var(--img-orange)" />}
+        </Card>
+        <Card title="Throughput" subtitle="Designs released per month">
+          {throughput.some(b => b.value > 0) ? <BarChart data={throughput} color="var(--stage-tender, #4C8DFF)" /> : <NoHistory>No releases recorded yet.</NoHistory>}
+        </Card>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <Card title="Where time goes" subtitle="Avg per completed design — queue vs work vs review">
+          {timeSplit.length === 0 ? <NoHistory>No completed designs with stage history yet.</NoHistory> : <StackedBar segments={timeSplit} fmt={fmtDuration} />}
+        </Card>
+        <Card title="Active load by designer" subtitle="Open requests per designer">
+          {loadByDesigner.length === 0 ? <NoHistory>No active load.</NoHistory> : <BarChart data={loadByDesigner} color="var(--stage-analysis, #8B5CF6)" horizontal />}
+        </Card>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <Card title="Requests by system" subtitle="All requests">
+          {bySystem.length === 0 ? <NoHistory>No requests.</NoHistory> : <Pie segments={bySystem} />}
+        </Card>
+        <Card title="Requests by urgency" subtitle="All requests">
+          {byUrgency.length === 0 ? <NoHistory>No requests.</NoHistory> : <Pie segments={byUrgency} />}
+        </Card>
+      </div>
+    </>
+  );
+}
+
+// Count rows by a key → [{label,value,color}] sorted desc.
+function countBy(rows, key, colorMap) {
+  const map = {};
+  rows.forEach(r => { const k = r[key] || 'Unspecified'; map[k] = (map[k] || 0) + 1; });
+  return Object.entries(map).map(([label, value]) => label)
+    .sort((a, b) => map[b] - map[a])
+    .map((label, i) => ({ label, value: map[label], color: (colorMap && colorMap[label]) || CHART_PALETTE[i % CHART_PALETTE.length] }));
+}
+
+function DesignerScorecard({ d, reqs = [] }) {
+  const active = reqs.filter(r => r.active);
+  const overdue = active.filter(r => r.overdue).length;
+  const timeSplit = [
+    { label: 'Queue wait', value: d.avg_queue, color: 'var(--stage-prospect, #64748B)' },
+    { label: 'Design',     value: d.avg_design, color: 'var(--stage-tender, #4C8DFF)' },
+    { label: 'Review',     value: d.avg_review, color: 'var(--img-orange, #F0A028)' },
+  ].filter(s => s.value > 0);
+  const workload = DESIGN_STAGE_ORDER
+    .map(st => ({ label: st, value: active.filter(r => r.design_stage === st).length }))
+    .filter(x => x.value > 0);
   return (
     <>
       <div style={{ fontSize: 18, fontWeight: 800 }}>{d.name}</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
-        <KPI label="Completed designs" value={d.completed_count} sub="Released / approved" accent="green" />
-        <KPI label="Active load"       value={d.active_count} sub="In progress now" accent="orange" />
-        <KPI label="Avg design time"   value={fmtDuration(d.avg_design_time)} sub="In-progress + review" />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+        <KPI label="Completed designs" value={d.completed} sub="Released / approved" accent="green" />
+        <KPI label="Active load" value={d.active} sub={overdue ? `${overdue} overdue` : 'On track'} accent={overdue ? 'orange' : 'orange'} />
+        <KPI label="On-time delivery" value={d.on_time_rate == null ? '—' : pctFmt(d.on_time_rate)} sub="vs due date" accent="green" />
+        <KPI label="Avg turnaround" value={fmtDuration(d.avg_turn)} sub="Incoming → released" />
       </div>
-      <Card title="Quality & speed" subtitle="How cleanly and quickly they deliver">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
-          <MiniStat label="Avg turnaround" value={fmtDuration(d.avg_total_turnaround)}
-            hint="Incoming → released, end to end." />
+
+      <Card title="Quality & accuracy" subtitle="How cleanly they deliver">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
           <MiniStat label="Revision rate" value={pctFmt(d.revision_rate)}
-            hint="Share of designs sent back for rework. Lower is better."
-            warn={d.revision_rate >= 0.3} />
-          <MiniStat label="First-time approval" value={pctFmt(d.first_time_approval_rate)}
-            hint="Share approved without any revision. Higher is better."
-            warn={d.first_time_approval_rate > 0 && d.first_time_approval_rate < 0.6} />
+            hint="Share of designs sent back for rework. Lower is better." warn={d.revision_rate >= 0.3} />
+          <MiniStat label="First-time approval" value={pctFmt(d.first_time_rate)}
+            hint="Share approved without any revision. Higher is better." warn={d.first_time_rate > 0 && d.first_time_rate < 0.6} />
+          <MiniStat label="Avg queue wait" value={fmtDuration(d.avg_queue)}
+            hint="Time a request waits before this designer starts — a queue/capacity signal, not a designer one." />
+          <MiniStat label="Estimate accuracy" value={d.est_accuracy == null ? '—' : `${(d.est_accuracy * 100).toFixed(0)}%`}
+            hint="Actual design hours ÷ estimated hours. ~100% = realistic; >100% = under-estimated." warn={d.est_accuracy != null && d.est_accuracy > 1.5} />
         </div>
       </Card>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <Card title="Where their time goes" subtitle="Avg per completed design">
+          {timeSplit.length === 0 ? <NoHistory>No completed designs with stage history yet.</NoHistory> : <StackedBar segments={timeSplit} fmt={fmtDuration} />}
+        </Card>
+        <Card title="Their active workload" subtitle="Open requests by stage">
+          {workload.length === 0 ? <NoHistory>No active requests.</NoHistory> : <BarChart data={workload} color="var(--img-orange)" />}
+        </Card>
+      </div>
     </>
   );
 }
 
 function DesignComparison({ rows, onPick }) {
-  if (!rows.length) return <NoHistory>No designers yet.</NoHistory>;
+  if (!rows.length) return <NoHistory>No designers with assigned requests yet.</NoHistory>;
   const th = { textAlign: 'right', padding: '8px 10px', fontSize: 10.5, fontWeight: 700, color: 'var(--fg-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em', borderBottom: '1px solid var(--border-subtle)' };
   const thL = { ...th, textAlign: 'left' };
   const td = { textAlign: 'right', padding: '9px 10px', borderBottom: '1px solid var(--border-subtle)', fontSize: 12.5 };
   const tdL = { ...td, textAlign: 'left', fontWeight: 600 };
-  const sorted = [...rows].sort((a, b) => b.completed_count - a.completed_count);
+  const sorted = [...rows].sort((a, b) => b.active - a.active);
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
       <thead><tr>
         <th style={thL}>Designer</th>
-        <th style={th}>Completed</th><th style={th}>Active</th>
-        <th style={th}>Avg design time</th><th style={th}>Turnaround</th>
-        <th style={th} title="Lower is better">Revision rate</th>
-        <th style={th} title="Higher is better">1st-time approval</th>
+        <th style={th}>Active</th><th style={th} title="Past due date">Overdue</th>
+        <th style={th}>Completed</th>
+        <th style={th} title="Higher is better">On-time</th>
+        <th style={th} title="Time before work starts">Queue wait</th>
+        <th style={th}>Avg design</th>
+        <th style={th} title="Lower is better">Revision</th>
       </tr></thead>
       <tbody>
         {sorted.map(d => (
@@ -837,16 +1029,73 @@ function DesignComparison({ rows, onPick }) {
             onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover, #f7f7f7)'}
             onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
             <td style={tdL}>{d.name}</td>
-            <td style={td}>{d.completed_count}</td>
-            <td style={td}>{d.active_count}</td>
-            <td style={td}>{fmtDuration(d.avg_design_time)}</td>
-            <td style={td}>{fmtDuration(d.avg_total_turnaround)}</td>
+            <td style={td}>{d.active}</td>
+            <td style={{ ...td, color: d.overdue > 0 ? 'var(--img-orange-700, #B8680E)' : 'var(--fg-primary)', fontWeight: d.overdue > 0 ? 700 : 400 }}>{d.overdue}</td>
+            <td style={td}>{d.completed}</td>
+            <td style={td}>{d.on_time_rate == null ? '—' : pctFmt(d.on_time_rate)}</td>
+            <td style={td}>{fmtDuration(d.avg_queue)}</td>
+            <td style={td}>{fmtDuration(d.avg_design)}</td>
             <td style={{ ...td, color: d.revision_rate >= 0.3 ? 'var(--img-orange-700, #B8680E)' : 'var(--fg-primary)' }}>{pctFmt(d.revision_rate)}</td>
-            <td style={td}>{pctFmt(d.first_time_approval_rate)}</td>
           </tr>
         ))}
       </tbody>
     </table>
+  );
+}
+
+// ---- Chart primitives used by the Design tab ----
+// Vertical (or horizontal) bar chart of counts. data = [{label,value}].
+function BarChart({ data, color = 'var(--img-orange)', horizontal }) {
+  const max = Math.max(...data.map(d => d.value), 1);
+  if (horizontal) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {data.map((b, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ width: 110, fontSize: 12, color: 'var(--fg-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.label}</span>
+            <div style={{ flex: 1, background: 'var(--neutral-100, #f1f1f1)', borderRadius: 5, height: 18 }}>
+              <div style={{ width: `${(b.value / max) * 100}%`, height: '100%', background: color, borderRadius: 5, minWidth: b.value ? 3 : 0 }}></div>
+            </div>
+            <span className="t-num" style={{ width: 28, textAlign: 'right', fontSize: 12, fontWeight: 700 }}>{b.value}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, height: 180, padding: '10px 4px 0' }}>
+      {data.map((b, i) => (
+        <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%', justifyContent: 'flex-end', gap: 6 }}>
+          <span className="t-num" style={{ fontSize: 12, fontWeight: 700, color: 'var(--fg-secondary)' }}>{b.value || ''}</span>
+          <div style={{ width: '64%', maxWidth: 56, height: `${(b.value / max) * 100}%`, minHeight: b.value ? 4 : 0, background: color, borderRadius: '5px 5px 0 0' }}></div>
+          <span style={{ fontSize: 10.5, color: 'var(--fg-tertiary)', textAlign: 'center', lineHeight: 1.2 }}>{b.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Horizontal stacked bar + legend. segments = [{label,value,color}]. `fmt` formats each value.
+function StackedBar({ segments, fmt: fmtFn = (v) => v }) {
+  const total = segments.reduce((s, x) => s + x.value, 0) || 1;
+  return (
+    <div>
+      <div style={{ display: 'flex', height: 22, borderRadius: 5, overflow: 'hidden', marginBottom: 14 }}>
+        {segments.map((s, i) => (
+          <div key={i} title={`${s.label} · ${fmtFn(s.value)}`} style={{ width: `${(s.value / total) * 100}%`, background: s.color }}></div>
+        ))}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {segments.map((s, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12.5 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+              <span style={{ width: 10, height: 10, borderRadius: 3, background: s.color }}></span>{s.label}
+            </span>
+            <span style={{ color: 'var(--fg-secondary)' }}>{fmtFn(s.value)} · {((s.value / total) * 100).toFixed(0)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -989,33 +1238,60 @@ function Funnel({ byStage }) {
   );
 }
 
-function ConvFunnel({ byStage }) {
-  const max = Math.max(1, ...byStage.map(s => s.count));
+// True progression funnel — how many deals REACHED each stage (current stage is
+// the furthest-reached proxy; Won deals reach the end), the stage-to-stage
+// conversion %, and the overall % that reach Won. Computed from the (filtered)
+// deals so it respects the active filter. Lost deals count up to the stage they
+// died in, so the leak between stages shows where deals are lost.
+function ConversionFunnel({ deals }) {
+  const SEQ = window.STAGE_ORDER || [];
+  const reached = SEQ.map(() => 0);
+  let wonCount = 0;
+  const entered = deals.length;
+  deals.forEach(d => {
+    let idx = d.status === 'Won' ? SEQ.length - 1 : SEQ.indexOf(d.stage);
+    if (idx < 0) idx = 0;
+    if (d.status === 'Won') wonCount++;
+    for (let i = 0; i <= idx; i++) reached[i]++;
+  });
+  if (entered === 0) return <NoHistory>No deals to chart.</NoHistory>;
+
+  const cols = SEQ.map((st, i) => ({
+    key: st,
+    label: (window.STAGE_META && window.STAGE_META[st] && window.STAGE_META[st].label) || st,
+    color: (window.STAGE_META && window.STAGE_META[st] && window.STAGE_META[st].fg) || 'var(--stage-tender, #4C8DFF)',
+    count: reached[i],
+    conv: i === 0 ? null : (reached[i - 1] ? reached[i] / reached[i - 1] : 0),
+  }));
+  cols.push({
+    key: 'won', label: 'Won', color: 'var(--img-green, #2EA44F)', won: true,
+    count: wonCount, conv: reached[SEQ.length - 1] ? wonCount / reached[SEQ.length - 1] : 0,
+  });
+  const max = Math.max(1, ...cols.map(c => c.count));
+  const overall = entered ? wonCount / entered : 0;
+  const pct = (x) => `${(x * 100).toFixed((x * 100) % 1 ? 1 : 0)}%`;
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      {byStage.map((s, i) => {
-        const w = 30 + (s.count / max) * 70;
-        const next = byStage[i + 1];
-        const drop = next && s.count > 0 ? Math.round(((s.count - next.count) / s.count) * 100) : null;
-        return (
-          <div key={s.stage} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{ width: 110, fontSize: 12.5, fontWeight: 500, textAlign: 'right', color: 'var(--fg-secondary)' }}>{s.meta.label}</div>
-            <div style={{ flex: 1, position: 'relative', height: 38, display: 'flex', alignItems: 'center' }}>
-              <div style={{
-                width: `${w}%`, height: 28, background: s.meta.fg,
-                clipPath: 'polygon(0 0, 100% 0, 96% 100%, 4% 100%)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                color: '#fff', fontSize: 12, fontWeight: 600,
-              }}>
-                <span className="t-num">{s.count} · {fmtShort(s.value)}</span>
-              </div>
+    <div style={{ display: 'flex', gap: 20, alignItems: 'stretch' }}>
+      <div style={{ flex: 1, display: 'flex', alignItems: 'flex-end', gap: 8, height: 240 }}>
+        {cols.map(c => (
+          <div key={c.key} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%', justifyContent: 'flex-end' }}>
+            <div style={{ height: 22 }}>
+              {c.conv != null && (
+                <span style={{ fontSize: 11, fontWeight: 700, color: c.won ? 'var(--img-green-700, #1F7A3D)' : 'var(--fg-secondary)', background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)', borderRadius: 999, padding: '1px 8px' }}>{pct(c.conv)}</span>
+              )}
             </div>
-            <div style={{ width: 90, fontSize: 11, color: drop != null && drop > 0 ? 'var(--color-danger)' : 'var(--fg-tertiary)' }}>
-              {drop != null ? (drop > 0 ? `↓ ${drop}% drop-off` : '—') : <span style={{ color: 'var(--img-green-700)', fontWeight: 600 }}>↑ to close</span>}
-            </div>
+            <div className="t-num" style={{ fontSize: 13, fontWeight: 800, marginBottom: 4 }}>{c.count}</div>
+            <div style={{ width: '68%', maxWidth: 60, height: `${(c.count / max) * 100}%`, minHeight: c.count ? 6 : 0, background: c.color, borderRadius: '5px 5px 0 0', transition: 'height 500ms var(--ease-out)' }}></div>
+            <div style={{ fontSize: 11, color: 'var(--fg-secondary)', marginTop: 8, textAlign: 'center', lineHeight: 1.2 }}>{c.label}</div>
           </div>
-        );
-      })}
+        ))}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', minWidth: 116, borderLeft: '1px solid var(--border-subtle)', paddingLeft: 18 }}>
+        <div className="t-num" style={{ fontSize: 30, fontWeight: 800, color: 'var(--img-green-700, #1F7A3D)' }}>{pct(overall)}</div>
+        <div style={{ fontSize: 12, color: 'var(--fg-secondary)', textAlign: 'center', marginTop: 2 }}>Conversion to Won</div>
+        <div style={{ fontSize: 11, color: 'var(--fg-tertiary)', textAlign: 'center', marginTop: 6 }}>{wonCount} of {entered} deals</div>
+      </div>
     </div>
   );
 }

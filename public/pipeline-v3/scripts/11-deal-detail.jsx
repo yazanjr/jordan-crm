@@ -242,7 +242,7 @@ function DealDetail({ deal, onClose, onAdvance, onMore, onUpdate, onAction,
                     </div>
                   );
                 }
-                const efType = f.type === 'textarea' ? 'text' : f.type;
+                const efType = f.key === 'district' ? 'area' : (f.type === 'textarea' ? 'text' : f.type);
                 const opts = f.options ? f.options.map(o => ({ value: o, label: o })) : undefined;
                 const display = (f.type === 'number' && (f.key === 'signingPrice' || f.key === 'value') && raw != null)
                   ? window.formatJOD(raw)
@@ -744,7 +744,26 @@ function EditableField({ label, type, value, options, onSave, suffix, display })
     textAlign: 'left',
   };
   if (editing) {
-    if (type === 'select') {
+    if (type === 'area') {
+      // Search-or-create area picker. Pick/Enter saves (persisting a new area to
+      // the managed list first); click-away/Esc cancels.
+      const commitArea = async (name) => {
+        setEditing(false);
+        const clean = (name || '').trim();
+        if (!clean || clean === value) return;
+        if (!(window.AREAS || []).includes(clean)) {
+          const r = await window.api.post('/opportunities/meta/areas', { name: clean }).catch(() => null);
+          if (r && Array.isArray(r.areas)) window.AREAS = r.areas;
+        }
+        onSave?.(clean);
+      };
+      editor = (
+        <window.AreaCombobox value={draft} autoFocus
+          onChange={setDraft}
+          onPick={commitArea}
+          onClose={() => { setEditing(false); setDraft(value); }} />
+      );
+    } else if (type === 'select') {
       editor = (
         <select ref={ref} defaultValue={value}
           onChange={e => { onSave?.(e.target.value); setEditing(false); }}
@@ -909,6 +928,9 @@ function DiscountEditor({ quote, releasedRequestId, onSaved }) {
   const [saving,     setSaving]     = useState(false);
   const [error,      setError]      = useState(null);
   const [confirm,    setConfirm]    = useState(null);  // { newGlobal, customCount }
+  const [approval,   setApproval]   = useState(null);  // { opp_id, quotation_id, requested_pct } when over limit
+  const [apprNote,   setApprNote]   = useState('');
+  const [apprState,  setApprState]  = useState(null);  // 'sending' | 'sent'
 
   // Recompute lines from the latest quote on every prop change so a refetched
   // quote redraws here too.
@@ -927,7 +949,7 @@ function DiscountEditor({ quote, releasedRequestId, onSaved }) {
   const customCount = lines.filter(li => Math.abs((+li.discount_pct || 0) - priorGlobal) > 0.0005).length;
 
   const patchDiscount = async (body) => {
-    setSaving(true); setError(null);
+    setSaving(true); setError(null); setApproval(null);
     try {
       const r = await window.api.patch(`/quotation-versions/${quote.id}/discount`, body);
       // Update local lines immediately so the user sees feedback before the parent refetch lands.
@@ -940,7 +962,12 @@ function DiscountEditor({ quote, releasedRequestId, onSaved }) {
       if (r.discount_pct_global != null) setGlobalPct(Math.round(r.discount_pct_global * 100 * 100) / 100);
       onSaved?.();
     } catch (e) {
-      if (e?.data?.over_cap) {
+      if (e?.data?.needs_approval) {
+        // Over the limit — offer the manager-approval request (same flow as the deal page).
+        setApproval({ opp_id: e.data.opp_id, quotation_id: e.data.quotation_id, requested_pct: e.data.requested_pct });
+        setApprState(null); setApprNote('');
+        setError(e.data.error);
+      } else if (e?.data?.over_cap) {
         const lines = e.data.over_cap.map(o => `${o.model} → ${(o.requested_pct * 100).toFixed(1)}%`).join('; ');
         setError(`${e.data.error} Over cap: ${lines}`);
       } else {
@@ -949,8 +976,26 @@ function DiscountEditor({ quote, releasedRequestId, onSaved }) {
     } finally { setSaving(false); }
   };
 
+  // Raise the over-limit discount approval request for a sales manager.
+  const requestApproval = async () => {
+    if (!approval) return;
+    setApprState('sending');
+    try {
+      await window.api.post('/approvals', {
+        opp_id: approval.opp_id,
+        quotation_id: approval.quotation_id,
+        requested_pct: approval.requested_pct,
+        notes: apprNote.trim() || null,
+      });
+      setApprState('sent'); setError(null);
+    } catch (e) {
+      setApprState(null);
+      setError(e?.message || 'Could not send the approval request.');
+    }
+  };
+
   const onGlobalCommit = () => {
-    const v = Math.max(0, Math.min(30, Number(globalPct) || 0)) / 100;
+    const v = Math.max(0, Math.min(99, Number(globalPct) || 0)) / 100;
     if (Math.abs(v - priorGlobal) < 0.0005) return;  // no change
     if (customCount > 0) {
       setConfirm({ newGlobal: v, customCount });
@@ -966,7 +1011,7 @@ function DiscountEditor({ quote, releasedRequestId, onSaved }) {
   };
 
   const saveLine = (lineId, pct) => {
-    const v = Math.max(0, Math.min(30, Number(pct) || 0)) / 100;
+    const v = Math.max(0, Math.min(99, Number(pct) || 0)) / 100;
     patchDiscount({ line_discounts: { [lineId]: v } });
   };
 
@@ -982,14 +1027,14 @@ function DiscountEditor({ quote, releasedRequestId, onSaved }) {
         <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--fg-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Discount</span>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--fg-primary)' }}>
           Global
-          <input type="number" min={0} max={30} step={0.5}
+          <input type="number" min={0} max={99} step={0.5}
             value={globalPct}
             onChange={e => setGlobalPct(e.target.value)}
             onBlur={onGlobalCommit}
             onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
             disabled={saving}
             style={inputStyle}
-            title="Internal global discount %. Max 30%." />
+            title="Internal global discount %. Above the limit needs manager approval." />
           <span style={{ fontSize: 11, color: 'var(--fg-tertiary)' }}>%</span>
         </label>
         <span title="Weighted across all items — what the customer effectively pays."
@@ -1016,6 +1061,31 @@ function DiscountEditor({ quote, releasedRequestId, onSaved }) {
       {error && (
         <div style={{ marginTop: 6, padding: 6, fontSize: 11, color: '#B0241D', background: '#FDECEC', border: '1px solid #F5B6B1', borderRadius: 5 }}>
           {error}
+        </div>
+      )}
+
+      {approval && apprState === 'sent' && (
+        <div style={{ marginTop: 6, padding: '7px 9px', fontSize: 11, color: 'var(--img-green-700, #1F7A3D)', background: 'var(--img-green-50, #ECFAF1)', border: '1px solid var(--img-green-200, #B7E1C4)', borderRadius: 5 }}>
+          Approval requested for {approval.requested_pct}% — a sales manager will review it. Re-apply the discount once it's approved.
+        </div>
+      )}
+
+      {approval && apprState !== 'sent' && (
+        <div style={{ marginTop: 6, padding: '8px 10px', background: 'var(--img-orange-50, #FEF7EC)', border: '1px solid var(--img-orange-200, #F5C77E)', borderRadius: 6 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--img-orange-700, #B8680E)', marginBottom: 6 }}>
+            {approval.requested_pct}% needs sales-manager approval
+          </div>
+          <textarea value={apprNote} onChange={e => setApprNote(e.target.value)} rows={2}
+            placeholder="Note for the approver (optional) — e.g. why this discount is needed"
+            style={{ width: '100%', padding: '6px 8px', fontSize: 11.5, fontFamily: 'inherit', borderRadius: 5, border: '1px solid var(--border-default)', resize: 'vertical', boxSizing: 'border-box' }} />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 6 }}>
+            <button onClick={() => { setApproval(null); setError(null); }} disabled={apprState === 'sending'}
+              style={{ padding: '5px 10px', borderRadius: 5, fontSize: 11.5, fontWeight: 600, background: 'var(--bg-surface)', color: 'var(--fg-primary)', border: '1px solid var(--border-default)', cursor: 'pointer' }}>Cancel</button>
+            <button onClick={requestApproval} disabled={apprState === 'sending'}
+              style={{ padding: '5px 12px', borderRadius: 5, fontSize: 11.5, fontWeight: 700, background: 'var(--img-orange)', color: '#fff', border: '1px solid var(--img-orange)', cursor: apprState === 'sending' ? 'wait' : 'pointer' }}>
+              {apprState === 'sending' ? 'Sending…' : 'Request approval'}
+            </button>
+          </div>
         </div>
       )}
 

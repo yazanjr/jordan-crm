@@ -411,8 +411,97 @@ function AccountCombobox({ value, onChange, onPick, placeholder = 'Search existi
   );
 }
 
+// AreaCombobox — search-or-create over the managed project-location list
+// (window.AREAS, a flat array of names). onPick(name) selects an existing area;
+// onChange(value) keeps the typed text (a new area, created on save).
+function AreaCombobox({ value, onChange, onPick, onClose, placeholder = 'Search area or type new…', autoFocus }) {
+  const [open, setOpen] = React.useState(false);
+  const [hi, setHi]     = React.useState(0);
+  const wrapRef  = React.useRef(null);
+  const inputRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (!open) return;
+    function onDoc(e) { if (wrapRef.current && !wrapRef.current.contains(e.target)) { setOpen(false); onClose?.(); } }
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  React.useEffect(() => { if (autoFocus && inputRef.current) inputRef.current.focus(); }, [autoFocus]);
+
+  const candidates = React.useMemo(() => {
+    const pool = window.AREAS || [];
+    const q = (value || '').toLowerCase().trim();
+    if (!q) return pool.slice(0, 10);
+    return pool.filter(a => String(a).toLowerCase().includes(q)).slice(0, 10);
+  }, [value, open]);
+
+  const exact = (value || '').trim().length > 0 &&
+    candidates.some(a => String(a).toLowerCase() === value.toLowerCase().trim());
+  const showCreate = (value || '').trim().length >= 2 && !exact;
+  const total = candidates.length + (showCreate ? 1 : 0);
+
+  const onKey = (e) => {
+    if (!open) { if (e.key === 'ArrowDown' || e.key === 'Enter') { setOpen(true); e.preventDefault(); } return; }
+    if (e.key === 'ArrowDown') { setHi(h => Math.min(h + 1, total - 1)); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { setHi(h => Math.max(h - 1, 0)); e.preventDefault(); }
+    else if (e.key === 'Escape')  { setOpen(false); onClose?.(); e.preventDefault(); }
+    else if (e.key === 'Enter')   {
+      if (hi < candidates.length) { onPick?.(candidates[hi]); setOpen(false); }
+      else if (showCreate)        { onPick?.((value || '').trim()); setOpen(false); }
+      else { setOpen(false); onClose?.(); }
+      e.preventDefault();
+    }
+  };
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative' }}>
+      <input
+        ref={inputRef}
+        value={value || ''}
+        onChange={(e) => { onChange?.(e.target.value); setOpen(true); setHi(0); }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={onKey}
+        placeholder={placeholder}
+        style={{ ...inputStyle, width: '100%' }}
+      />
+      {open && total > 0 && (
+        <div style={_comboDropdown}>
+          {candidates.length > 0 && (
+            <div style={{ padding: '4px 8px', fontSize: 10, fontWeight: 700, color: 'var(--fg-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              Areas
+            </div>
+          )}
+          {candidates.map((a, i) => (
+            <button key={a} type="button"
+              onMouseEnter={() => setHi(i)}
+              onClick={() => { onPick?.(a); setOpen(false); }}
+              style={_comboRow(hi === i)}>
+              <span style={{ width: 22, height: 22, borderRadius: 6, flexShrink: 0, background: 'var(--neutral-100)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12 }}>📍</span>
+              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a}</span>
+            </button>
+          ))}
+          {showCreate && (
+            <>
+              {candidates.length > 0 && <div style={{ height: 1, background: 'var(--border-subtle)', margin: '4px 0' }}></div>}
+              <button type="button"
+                onMouseEnter={() => setHi(candidates.length)}
+                onClick={() => { onPick?.((value || '').trim()); setOpen(false); }}
+                style={{ ..._comboRow(hi === candidates.length), color: 'var(--img-orange-700)', fontWeight: 600 }}>
+                <span style={{ width: 22, height: 22, borderRadius: 6, border: '1px dashed var(--img-orange)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: 'var(--img-orange-700)', fontSize: 15, fontWeight: 700, flexShrink: 0 }}>+</span>
+                <span style={{ flex: 1 }}>Create new area "<span style={{ fontWeight: 700 }}>{value}</span>"</span>
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 window.ContactCombobox = ContactCombobox;
 window.AccountCombobox = AccountCombobox;
+window.AreaCombobox = AreaCombobox;
 
 // ============================================================
 // 1) NEW DEAL MODAL — 3-step wizard
@@ -425,7 +514,7 @@ function NewDealModal({ onClose, onSubmit }) {
   const [data, setData] = React.useState({
     name: '', account: '', orgId: null, value: '', stage: 'prospect',
     owner: defaultOwner, scope: defaultScope, closeDate: '', probability: window.STAGE_PROBABILITY?.prospect ?? 10,
-    closeQuarter: '',
+    closeQuarter: '', district: '',
     contactId: null, contactName: '', contactRole: '', contactEmail: '', contactPhone: '',
     customFields: [], // [{id, label, type, value}]
   });
@@ -545,6 +634,14 @@ function NewDealModal({ onClose, onSubmit }) {
                 options={(window.PRODUCT_GROUPS || []).map(s => ({ value: s, label: s }))} />
             </Field>
           </div>
+          <Field label="Project location"
+            hint={(window.AREAS || []).includes(data.district) ? 'Existing area' : (data.district.trim().length >= 2 ? 'New area — will be created on save' : 'Type to search areas, or add a new one')}>
+            <window.AreaCombobox
+              value={data.district}
+              onChange={(v) => set('district', v)}
+              onPick={(name) => set('district', name)}
+            />
+          </Field>
         </>}
 
         {step === 1 && <>

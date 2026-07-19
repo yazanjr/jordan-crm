@@ -16,6 +16,26 @@ const { requireRole } = demoAuth;
 const router = express.Router();
 router.use(demoAuth);
 
+// ── Discount approval helpers ──────────────────────────────────────────────
+// The standard discount limit is configurable (settings.discount_limit, stored
+// as a percent e.g. "30"). Returns the limit as a fraction (0.30).
+function discountLimitFraction() {
+  const row = db.prepare(`SELECT value FROM settings WHERE key = 'discount_limit'`).get();
+  const pct = parseFloat(row && row.value);
+  return (Number.isFinite(pct) ? pct : 30) / 100;
+}
+// True if this opportunity has an APPROVED discount override covering `frac`
+// (a fraction). discount_approvals.approved_pct is stored as a percent.
+function hasApprovedDiscount(oppId, frac) {
+  if (!oppId) return false;
+  const row = db.prepare(`
+    SELECT MAX(approved_pct) AS maxpct FROM discount_approvals
+    WHERE opp_id = ? AND status = 'Approved'
+  `).get(oppId);
+  if (!row || row.maxpct == null) return false;
+  return (row.maxpct / 100) >= frac - 1e-9;
+}
+
 // ---------------------------------------------------------------------------
 // MULTER — site plan + design file uploads. Stored under uploads/design/:id/
 // ---------------------------------------------------------------------------
@@ -589,12 +609,26 @@ router.post('/quotation-versions', (req, res) => {
   const isManager  = ['design_manager', 'admin'].includes(req.user.role);
   if (!isAssigned && !isManager) return res.status(403).json({ error: 'Only the assigned designer can submit a quotation.' });
 
-  // ── Discount cap (Phase 8). Salesman tier (≤30%) is the only auto-allow.
-  //   30-40%: Sales Manager approval; >40%: HVAC General Manager.
-  //   For now we hard-cap at 30% server-side until the approval flow is wired.
+  // ── Discount limit (Phase 8). At or below the configurable limit applies
+  //   immediately; above it needs an APPROVED discount override on the deal
+  //   (raised via /approvals). Covers the global discount and any per-line one.
   const globalDiscount = Number(discount_pct_global) || 0;
-  if (globalDiscount < 0 || globalDiscount > 0.30) {
-    return res.status(400).json({ error: 'Global discount must be between 0% and 30%. Higher tiers need Sales Manager / HVAC GM approval (not yet wired).' });
+  const _itemsForCap = Array.isArray(line_items) ? line_items : [];
+  const maxDiscount = _itemsForCap.reduce(
+    (m, it) => Math.max(m, it.discount_pct != null ? Number(it.discount_pct) : globalDiscount),
+    globalDiscount);
+  if (globalDiscount < 0 || maxDiscount < 0) {
+    return res.status(400).json({ error: 'Discount cannot be negative.' });
+  }
+  const _limit = discountLimitFraction();
+  if (maxDiscount > _limit + 1e-9 && !hasApprovedDiscount(r.opportunity_id, maxDiscount)) {
+    return res.status(400).json({
+      error: `Discount ${(maxDiscount * 100).toFixed(1)}% exceeds the ${(_limit * 100).toFixed(0)}% limit and needs Sales Manager approval.`,
+      needs_approval: true,
+      requested_pct: +(maxDiscount * 100).toFixed(2),
+      opp_id: r.opportunity_id,
+      quotation_id: null,
+    });
   }
 
   // ── Build line items. SKU-linked items snapshot list_price + cost.
@@ -899,19 +933,27 @@ router.post('/quotation-versions/:id/sales-revision', (req, res) => {
   if (items.length === 0) return res.status(400).json({ error: 'Parent has no line items.' });
 
   // Resolve effective discount per line. Per-line override > category > parent line.
+  const _limit = discountLimitFraction();
   const overCap = [];
   const resolved = items.map(li => {
     let d = li.discount_pct;
     if (li.category && categoryDiscounts[li.category] != null) d = +categoryDiscounts[li.category];
     if (lineDiscounts[li.id] != null) d = +lineDiscounts[li.id];
-    if (d > 0.30) overCap.push({ line_item_id: li.id, model: li.model, requested_pct: d });
+    if (d > _limit + 1e-9) overCap.push({ line_item_id: li.id, model: li.model, requested_pct: d });
     return { src: li, discount_pct: d };
   });
   if (overCap.length) {
-    return res.status(400).json({
-      error: 'This needs Sales Manager approval. (Approval flow not yet wired in this round.)',
-      over_cap: overCap,
-    });
+    const maxOver = overCap.reduce((m, o) => Math.max(m, o.requested_pct), 0);
+    if (!hasApprovedDiscount(opp.id, maxOver)) {
+      return res.status(400).json({
+        error: `Discount ${(maxOver * 100).toFixed(1)}% exceeds the ${(_limit * 100).toFixed(0)}% limit and needs Sales Manager approval.`,
+        needs_approval: true,
+        over_cap: overCap,
+        requested_pct: +(maxOver * 100).toFixed(2),
+        opp_id: opp.id,
+        quotation_id: null,   // discount_approvals.quotation_id FKs the legacy quotations table; the gate keys on opp_id
+      });
+    }
   }
 
   // Find the next version label. Pattern: design V1 → sales V1.1, V1.2, etc.
@@ -1027,9 +1069,10 @@ router.patch('/quotation-versions/:id/discount', (req, res) => {
   const mode            = body.mode === 'overwrite_all' ? 'overwrite_all' : 'overwrite_unmarked';
   const lineDiscounts   = body.line_discounts || {};
 
-  if (hasGlobal && (!Number.isFinite(newGlobal) || newGlobal < 0 || newGlobal > 0.30)) {
-    return res.status(400).json({ error: 'Global discount must be between 0% and 30%. Higher tiers need Sales Manager / HVAC GM approval (not yet wired).' });
+  if (hasGlobal && (!Number.isFinite(newGlobal) || newGlobal < 0)) {
+    return res.status(400).json({ error: 'Global discount must be a non-negative number.' });
   }
+  const _limit = discountLimitFraction();
 
   const items = db.prepare(`
     SELECT * FROM quotation_line_items WHERE quotation_version_id = ? ORDER BY line_num
@@ -1048,14 +1091,21 @@ router.patch('/quotation-versions/:id/discount', (req, res) => {
     }
     if (lineDiscounts[li.id] != null) d = Number(lineDiscounts[li.id]);
     if (!Number.isFinite(d) || d < 0) d = 0;
-    if (d > 0.30 + EPS) overCap.push({ line_item_id: li.id, model: li.model, requested_pct: d });
+    if (d > _limit + EPS) overCap.push({ line_item_id: li.id, model: li.model, requested_pct: d });
     return { src: li, d };
   });
   if (overCap.length) {
-    return res.status(400).json({
-      error: 'This needs Sales Manager approval. (Approval flow not yet wired in this round.)',
-      over_cap: overCap,
-    });
+    const maxOver = overCap.reduce((m, o) => Math.max(m, o.requested_pct), 0);
+    if (!hasApprovedDiscount(opp.id, maxOver)) {
+      return res.status(400).json({
+        error: `Discount ${(maxOver * 100).toFixed(1)}% exceeds the ${(_limit * 100).toFixed(0)}% limit and needs Sales Manager approval.`,
+        needs_approval: true,
+        over_cap: overCap,
+        requested_pct: +(maxOver * 100).toFixed(2),
+        opp_id: opp.id,
+        quotation_id: null,   // discount_approvals.quotation_id FKs the legacy quotations table; the gate keys on opp_id
+      });
+    }
   }
 
   let total = 0;
@@ -1273,73 +1323,80 @@ router.get('/design-performance', (req, res) => {
     return res.status(403).json({ error: 'Performance data is restricted.' });
   }
 
-  const designers = db.prepare(`
-    SELECT u.id, u.name FROM users u
-    JOIN roles r ON r.id = u.role_id
-    WHERE r.name IN ('designer', 'design_manager') AND u.is_active = 1
-  `).all();
+  // One flat row per assigned design request, with per-request derived metrics
+  // pre-computed server-side. The Reports client aggregates + filters over this
+  // (mirrors the Overview deals pattern), so the Design tab can slice by
+  // designer / system / urgency / status with no extra backend work.
+  const COMPLETED_STAGES = ['Released', 'Approved'];
+  const reqRows = db.prepare(`
+    SELECT dr.id, dr.assigned_designer_id AS designer_id, u.name AS designer_name,
+           dr.design_stage, dr.urgency, dr.system_type, dr.form_type, dr.request_type,
+           dr.modification_cause, dr.created_at, dr.due_date, dr.estimated_hours,
+           o.expected_value AS deal_value
+    FROM design_requests dr
+    LEFT JOIN users u ON u.id = dr.assigned_designer_id
+    LEFT JOIN opportunities o ON o.id = dr.opportunity_id
+    WHERE dr.assigned_designer_id IS NOT NULL
+    ${isDesigner ? 'AND dr.assigned_designer_id = ?' : ''}
+  `).all(...(isDesigner ? [req.user.id] : []));
 
-  function statsForDesigner(designerId) {
-    const requests = db.prepare(`
-      SELECT id, design_stage, created_at, version
-      FROM design_requests WHERE assigned_designer_id = ?
-    `).all(designerId);
-    if (requests.length === 0) return { completed_count: 0, active_count: 0, avg_design_time: 0, avg_total_turnaround: 0, revision_rate: 0, first_time_approval_rate: 0 };
+  // Pull all stage history for these requests in one query, group in JS.
+  const ids = reqRows.map(r => r.id);
+  const histRows = ids.length
+    ? db.prepare(`SELECT request_id, from_stage, to_stage, time_in_previous_stage, changed_at
+                  FROM design_stage_history
+                  WHERE request_id IN (${ids.map(() => '?').join(',')}) ORDER BY id`).all(...ids)
+    : [];
+  const histByReq = {};
+  for (const h of histRows) (histByReq[h.request_id] || (histByReq[h.request_id] = [])).push(h);
 
-    const completed = requests.filter(r => r.design_stage === 'Released' || r.design_stage === 'Approved');
-    const active    = requests.filter(r => !['Released', 'Approved'].includes(r.design_stage));
+  const nowMs = Date.now();
+  const sumWhere = (hist, pred) => hist.filter(pred).reduce((s, h) => s + (h.time_in_previous_stage || 0), 0);
 
-    const designTimes = [];
-    const turnarounds = [];
-    let revisionCount = 0;
-    let firstTimeApprovals = 0;
+  const requests = reqRows.map(r => {
+    const hist = histByReq[r.id] || [];
+    const completed = COMPLETED_STAGES.includes(r.design_stage);
+    // Time buckets (minutes) — measured on the transition OUT of each stage.
+    const queue_min  = sumWhere(hist, h => h.from_stage === 'Incoming' || h.from_stage === 'Queued');
+    const design_min = sumWhere(hist, h => h.from_stage === 'In Progress');
+    const review_min = sumWhere(hist, h => h.from_stage === 'Review');
+    const hold_min   = sumWhere(hist, h => h.from_stage === 'On Hold');
+    const turnaround_min = hist.reduce((s, h) => s + (h.time_in_previous_stage || 0), 0);
+    const was_revised = hist.some(h => h.from_stage === 'Review' && h.to_stage === 'In Progress');
+    const relRow = [...hist].reverse().find(h => COMPLETED_STAGES.includes(h.to_stage));
+    const released_at = relRow ? relRow.changed_at : null;
+    // SLA vs due date.
+    const dueMs = r.due_date ? new Date(r.due_date).getTime() : null;
+    const relMs = released_at ? new Date(released_at).getTime() : null;
+    const on_time = completed && dueMs != null && relMs != null ? (relMs <= dueMs) : null;
+    const overdue = !completed && dueMs != null ? (nowMs > dueMs) : false;
+    const days_open = Math.max(0, Math.floor((nowMs - new Date(r.created_at).getTime()) / 86400000));
 
-    requests.forEach(r => {
-      const hist = db.prepare(`
-        SELECT to_stage, time_in_previous_stage
-        FROM design_stage_history WHERE request_id = ? ORDER BY id
-      `).all(r.id);
-      const minutesIn = stage => hist.filter(h => h.to_stage === stage).reduce((s, h) => s + (h.time_in_previous_stage || 0), 0);
-      // "Design time" = total minutes spent IN 'In Progress' + 'Review'
-      // (those are the working stages — measured by time_in_previous_stage on the transition out of them)
-      const inProgressOut = hist.filter(h => h.from_stage === 'In Progress' || h.from_stage === 'Review');
-      const dt = inProgressOut.reduce((s, h) => s + (h.time_in_previous_stage || 0), 0);
-      if (r.design_stage === 'Released' || r.design_stage === 'Approved') {
-        designTimes.push(dt);
-        const last = hist[hist.length - 1];
-        if (last) turnarounds.push(hist.reduce((s, h) => s + (h.time_in_previous_stage || 0), 0));
-      }
-      // Revision = entered In Progress from Review
-      const wasRevised = hist.some(h => h.from_stage === 'Review' && h.to_stage === 'In Progress');
-      if (wasRevised) revisionCount += 1;
-      // First-time approval = went Review → Approved without ever being revised
-      if ((r.design_stage === 'Released' || r.design_stage === 'Approved') && !wasRevised) firstTimeApprovals += 1;
-    });
-
-    const avg = arr => arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : 0;
     return {
-      completed_count: completed.length,
-      active_count: active.length,
-      avg_design_time: avg(designTimes),           // minutes
-      avg_total_turnaround: avg(turnarounds),       // minutes
-      revision_rate: completed.length ? +(revisionCount / completed.length).toFixed(2) : 0,
-      first_time_approval_rate: completed.length ? +(firstTimeApprovals / completed.length).toFixed(2) : 0,
+      id: r.id,
+      designer_id: r.designer_id,
+      designer_name: r.designer_name || '—',
+      design_stage: r.design_stage,
+      urgency: r.urgency || 'Standard',
+      system: r.system_type || 'Unspecified',
+      form_type: r.form_type || null,
+      request_type: r.request_type,
+      modification_cause: r.modification_cause || null,
+      created_at: r.created_at,
+      due_date: r.due_date || null,
+      released_at,
+      estimated_hours: r.estimated_hours || null,
+      deal_value: r.deal_value || 0,
+      completed,
+      active: !completed,
+      queue_min, design_min, review_min, hold_min, turnaround_min,
+      was_revised,
+      first_time_approved: completed && !was_revised,
+      on_time, overdue, days_open,
     };
-  }
-
-  // Designer self-view — only their own row.
-  if (isDesigner) {
-    return res.json({
-      scope: 'self',
-      designers: [{ id: req.user.id, name: req.user.name, ...statsForDesigner(req.user.id) }],
-    });
-  }
-
-  // Managers / PM / admin — full per-designer breakdown.
-  res.json({
-    scope: 'per_designer',
-    designers: designers.map(d => ({ id: d.id, name: d.name, ...statsForDesigner(d.id) })),
   });
+
+  res.json({ scope: isDesigner ? 'self' : 'per_designer', requests });
 });
 
 // ---------------------------------------------------------------------------

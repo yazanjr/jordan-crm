@@ -44,6 +44,23 @@ router.get('/meta/product-groups', (req, res) => {
   res.json(merged);
 });
 
+// GET /api/opportunities/meta/areas — managed "Project Location" list.
+// Seed order (id) is preserved so Amman stays first.
+router.get('/meta/areas', (req, res) => {
+  const rows = db.prepare(`SELECT name FROM areas WHERE is_active = 1 ORDER BY id`).all();
+  res.json(rows.map(r => r.name));
+});
+
+// POST /api/opportunities/meta/areas  { name }  — create-if-not-exists.
+// Any salesman can add a new area from the New Deal form (search-or-create).
+router.post('/meta/areas', (req, res) => {
+  const name = (req.body && req.body.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'name is required.' });
+  db.prepare(`INSERT OR IGNORE INTO areas (name) VALUES (?)`).run(name);
+  const rows = db.prepare(`SELECT name FROM areas WHERE is_active = 1 ORDER BY id`).all();
+  res.json({ success: true, areas: rows.map(r => r.name) });
+});
+
 // Multer — store uploads on disk
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
