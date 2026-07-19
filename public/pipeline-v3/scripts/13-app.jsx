@@ -543,6 +543,7 @@ function PipelineApp() {
         onNav={(id) => {
           if (id === 'contacts')     { window.location.href = 'Contacts.html'; return; }
           if (id === 'reports')      { window.location.href = 'Reports.html'; return; }
+          if (id === 'diagnostics')  { window.location.href = 'Diagnostics.html'; return; }
           if (id === 'design-board') { window.location.href = 'DesignBoard.html'; return; }
           if (id === 'my-tasks')     { window.location.href = 'MyTasks.html'; return; }
           if (id === 'pricelist')    { window.location.href = 'Pricelist.html'; return; }

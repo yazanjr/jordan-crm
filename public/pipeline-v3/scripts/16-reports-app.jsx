@@ -222,6 +222,7 @@ function ReportsApp() {
         active={activeNav}
         onNav={(id) => {
           if (id === 'pipeline')     { window.location.href = 'Pipeline.html'; return; }
+          if (id === 'diagnostics')  { window.location.href = 'Diagnostics.html'; return; }
           if (id === 'contacts')     { window.location.href = 'Contacts.html'; return; }
           if (id === 'design-board') { window.location.href = 'DesignBoard.html'; return; }
           if (id === 'my-tasks')     { window.location.href = 'MyTasks.html'; return; }

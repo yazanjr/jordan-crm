@@ -104,9 +104,10 @@ function Sidebar({ active = 'pipeline', onNav, onUserMenu, onNotifications }) {
 
       <nav style={{ flex: 1, padding: '8px 8px', overflowY: 'auto', overflowX: 'hidden' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-          <NavItem id="pipeline"  icon={Briefcase} label="Pipeline" />
-          <NavItem id="contacts"  icon={Users} label="Contacts" />
-          <NavItem id="reports"   icon={Trend} label="Reports" />
+          <NavItem id="pipeline"    icon={Briefcase} label="Pipeline" />
+          <NavItem id="contacts"    icon={Users} label="Contacts" />
+          <NavItem id="reports"     icon={Trend} label="Reports" />
+          <NavItem id="diagnostics" icon={Trend} label="Diagnostics" />
         </div>
         {!collapsed && <SectionLabel>Design</SectionLabel>}
         {collapsed && <SectionDivider />}
