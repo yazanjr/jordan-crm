@@ -1046,20 +1046,26 @@ const _closeInput = {
 
 // C.1 — Close a deal as Won or Lost. Won optionally records the signing price;
 // Lost requires a reason (loaded from /opportunities/meta/lost-reasons).
+const WON_REASONS = ['price', 'product fit', 'delivery time', 'relationship', 'spec locked to us', 'incumbent', 'other'];
 function CloseDealModal({ deal, outcome: presetOutcome, onClose, onSubmit }) {
   const [outcome, setOutcome] = React.useState(presetOutcome || '');
   const [signingPrice, setSigningPrice] = React.useState(deal.signingPrice || deal.value || '');
+  const [wonReason, setWonReason] = React.useState('');
+  const [wonNote, setWonNote] = React.useState('');
   const [lostReasonId, setLostReasonId] = React.useState('');
   const [lostNotes, setLostNotes] = React.useState('');
   const [reasons, setReasons] = React.useState([]);
   React.useEffect(() => {
     window.api.get('/opportunities/meta/lost-reasons').then(setReasons).catch(() => setReasons([]));
   }, []);
-  const canSubmit = outcome === 'Won' || (outcome === 'Lost' && lostReasonId);
+  // Match the server rules: Won needs a signing price + reason; Lost needs a reason + notes.
+  const canSubmit = outcome === 'Won'
+    ? (Number(signingPrice) > 0 && !!wonReason)
+    : (outcome === 'Lost' && !!lostReasonId && !!lostNotes.trim());
   const submit = () => {
     if (!canSubmit) return;
     if (outcome === 'Won') {
-      onSubmit({ outcome: 'Won', signing_price: signingPrice ? Number(signingPrice) : null });
+      onSubmit({ outcome: 'Won', signing_price: Number(signingPrice), won_reason: wonReason, won_note: wonNote.trim() || null });
     } else {
       onSubmit({ outcome: 'Lost', lost_reason_id: Number(lostReasonId), lost_notes: lostNotes.trim() || null });
     }
@@ -1088,24 +1094,36 @@ function CloseDealModal({ deal, outcome: presetOutcome, onClose, onSubmit }) {
             );
           })}
         </div>
-        {outcome === 'Won' && (
+        {outcome === 'Won' && <>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-secondary)' }}>Signing price (JOD)</span>
-            <input type="number" value={signingPrice} onChange={e => setSigningPrice(e.target.value)} style={_closeInput} />
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-secondary)' }}>Signing price — actual signed amount (JOD) <span style={{ color: '#B0241D' }}>*</span></span>
+            <input type="number" value={signingPrice} onChange={e => setSigningPrice(e.target.value)}
+              style={{ ..._closeInput, borderColor: Number(signingPrice) > 0 ? 'var(--border-default)' : '#F5B6B1' }} placeholder="e.g. 48500" />
           </label>
-        )}
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-secondary)' }}>Why did we win? <span style={{ color: '#B0241D' }}>*</span></span>
+            <select value={wonReason} onChange={e => setWonReason(e.target.value)} style={{ ..._closeInput, borderColor: wonReason ? 'var(--border-default)' : '#F5B6B1' }}>
+              <option value="">Select a reason…</option>
+              {WON_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-secondary)' }}>Note (optional)</span>
+            <textarea value={wonNote} onChange={e => setWonNote(e.target.value)} rows={2} style={{ ..._closeInput, resize: 'vertical' }} />
+          </label>
+        </>}
         {outcome === 'Lost' && <>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-secondary)' }}>Lost reason (required)</span>
-            <select value={lostReasonId} onChange={e => setLostReasonId(e.target.value)} style={_closeInput}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-secondary)' }}>Lost reason <span style={{ color: '#B0241D' }}>*</span></span>
+            <select value={lostReasonId} onChange={e => setLostReasonId(e.target.value)} style={{ ..._closeInput, borderColor: lostReasonId ? 'var(--border-default)' : '#F5B6B1' }}>
               <option value="">Select a reason…</option>
               {reasons.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
             </select>
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-secondary)' }}>Notes (optional)</span>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-secondary)' }}>What happened? <span style={{ color: '#B0241D' }}>*</span></span>
             <textarea value={lostNotes} onChange={e => setLostNotes(e.target.value)} rows={2}
-              style={{ ..._closeInput, resize: 'vertical' }} />
+              placeholder="Required — the story behind the loss" style={{ ..._closeInput, resize: 'vertical', borderColor: lostNotes.trim() ? 'var(--border-default)' : '#F5B6B1' }} />
           </label>
         </>}
       </div>

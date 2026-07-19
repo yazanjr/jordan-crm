@@ -1,9 +1,13 @@
-const express = require('express');
-const db      = require('../database/db');
-const authMw  = require('../middleware/auth');
+const express  = require('express');
+const db       = require('../database/db');
+const demoAuth = require('../middleware/demoAuth');
 
 const router = express.Router();
-router.use(authMw);
+// Was authMw (JWT) while every other pipeline route uses demoAuth — so the live
+// x-demo-user-id UI would 401. Aligned to demoAuth so activity logging works.
+router.use(demoAuth);
+
+const ACTIVITY_TYPES = ['visit', 'call', 'email', 'quote sent', 'follow-up', 'meeting', 'demo', 'other', 'Task'];
 
 // GET /api/activities?opp_id=...&user_id=...
 router.get('/', (req, res) => {
@@ -24,15 +28,17 @@ router.get('/', (req, res) => {
   res.json(db.prepare(sql).all(...params));
 });
 
-// POST /api/activities
+// POST /api/activities  — a logged sales activity (visit/call/…). Polymorphic:
+// may reference opp / contact / org / project. `done_at` stamped now for logged work.
 router.post('/', (req, res) => {
-  const { opp_id, contact_id, org_id, type, title, start_dt, end_dt, priority, assigned_to, notes } = req.body;
+  const { opp_id, contact_id, org_id, project_id, type, title, start_dt, end_dt, priority, assigned_to, notes } = req.body;
   if (!title || !type) return res.status(400).json({ error: 'title and type are required.' });
+  if (!ACTIVITY_TYPES.includes(type)) return res.status(400).json({ error: `type must be one of: ${ACTIVITY_TYPES.join(', ')}` });
 
   const result = db.prepare(`
-    INSERT INTO activities (opp_id, contact_id, org_id, type, title, start_dt, end_dt, priority, assigned_to, performed_by, notes)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)
-  `).run(opp_id||null, contact_id||null, org_id||null, type, title,
+    INSERT INTO activities (opp_id, contact_id, org_id, project_id, type, title, start_dt, end_dt, priority, assigned_to, performed_by, notes, status, done_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'Done',datetime('now'))
+  `).run(opp_id||null, contact_id||null, org_id||null, project_id||null, type, title,
          start_dt||null, end_dt||null, priority||'Medium',
          assigned_to||req.user.id, req.user.id, notes||null);
 

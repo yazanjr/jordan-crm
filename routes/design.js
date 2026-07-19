@@ -102,13 +102,13 @@ function logStageChange(requestId, fromStage, toStage, changedBy, notes) {
 function moveOppToStage(oppId, toStage, userId, note) {
   const opp = db.prepare(`SELECT id, stage, created_at FROM opportunities WHERE id = ?`).get(oppId);
   if (!opp || opp.stage === toStage) return;
-  const created = new Date(opp.created_at + 'Z').getTime();
-  const seconds = Math.max(0, Math.floor((Date.now() - created) / 1000));
   db.prepare(`UPDATE opportunities SET stage = ?, updated_at = datetime('now') WHERE id = ?`).run(toStage, oppId);
+  // `note` was previously discarded (stage_history had no reason column). Now persisted —
+  // design-driven moves (returned by Sally, released, modification) carry their reason.
   db.prepare(`
-    INSERT INTO stage_history (opp_id, from_stage, to_stage, changed_by, seconds_in_prev)
+    INSERT INTO stage_history (opp_id, from_stage, to_stage, changed_by, reason)
     VALUES (?, ?, ?, ?, ?)
-  `).run(oppId, opp.stage, toStage, userId || null, seconds);
+  `).run(oppId, opp.stage, toStage, userId || null, note || null);
 }
 function moveOppToLead(oppId, userId, note) { moveOppToStage(oppId, 'Lead', userId, note); }
 
@@ -1399,39 +1399,9 @@ router.get('/design-performance', (req, res) => {
   res.json({ scope: isDesigner ? 'self' : 'per_designer', requests });
 });
 
-// ---------------------------------------------------------------------------
-// GET /api/design-requests/stats        (Phase 3)
-//   Returns modification counts by salesman + reason breakdown.
-//   For the Reports page "Design modification requests" panel.
-//   IMPORTANT: must be registered BEFORE the /:id route, or Express matches
-//   `/stats` as `:id = 'stats'` → 404 "Request not found".
-// ---------------------------------------------------------------------------
-router.get('/design-requests/stats', (_req, res) => {
-  const bySalesman = db.prepare(`
-    SELECT u.id AS salesman_id, u.name AS salesman_name, COUNT(*) AS total
-    FROM design_requests dr
-    LEFT JOIN users u ON u.id = dr.requested_by
-    WHERE dr.request_type = 'Modification'
-    GROUP BY u.id, u.name
-    ORDER BY total DESC
-  `).all();
-  const byReason = db.prepare(`
-    SELECT u.id AS salesman_id, u.name AS salesman_name, dr.modification_reason AS reason, COUNT(*) AS n
-    FROM design_requests dr
-    LEFT JOIN users u ON u.id = dr.requested_by
-    WHERE dr.request_type = 'Modification'
-    GROUP BY u.id, u.name, dr.modification_reason
-  `).all();
-  // Rework cause: separates our-fault (Internal) from client/commercial-driven.
-  const byCause = db.prepare(`
-    SELECT u.id AS salesman_id, u.name AS salesman_name, dr.modification_cause AS cause, COUNT(*) AS n
-    FROM design_requests dr
-    LEFT JOIN users u ON u.id = dr.requested_by
-    WHERE dr.request_type = 'Modification'
-    GROUP BY u.id, u.name, dr.modification_cause
-  `).all();
-  res.json({ by_salesman: bySalesman, by_reason: byReason, by_cause: byCause });
-});
+// (Removed GET /api/design-requests/stats — it was dead code with NO permission
+//  check, leaking per-salesman modification data to any role. Its data now comes
+//  from /api/reports/salesman-performance and /api/diagnostics.)
 
 // ---------------------------------------------------------------------------
 // GET /api/design-requests/:id  — full request detail (used for drill-in)

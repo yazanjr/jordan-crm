@@ -387,9 +387,20 @@ function PipelineApp() {
   // ---- Move a deal's stage and persist via POST /opportunities/:id/stage ----
   // Used by the Kanban drag, the stage picker, and the "advance" button. Backward
   // moves are allowed; the backend still gates Tender behind a released quotation.
-  const updateStage = useCallback((id, newStage) => {
+  const updateStage = useCallback((id, newStage, reason) => {
     const prev = deals.find(d => d.id === id);
     if (!prev || prev.stage === newStage) return;
+
+    // A backward move must carry a reason (that's where the diagnostic signal is).
+    // Forward advances need none. Prompt on regress; abort if the user cancels.
+    const order = window.STAGE_ORDER || [];
+    const isRegress = order.indexOf(newStage) >= 0 && order.indexOf(prev.stage) >= 0 && order.indexOf(newStage) < order.indexOf(prev.stage);
+    if (isRegress && !reason) {
+      const r = window.prompt(`Moving "${prev.name}" back to ${window.STAGE_META[newStage]?.label || newStage}.\nWhy is it moving backward? (required)`);
+      if (r == null || !r.trim()) return;   // cancelled — no move at all
+      reason = r.trim();
+    }
+
     setDeals(ds => ds.map(d => d.id === id ? { ...d, stage: newStage } : d));
     setSelectedDeal(sd => sd && sd.id === id ? { ...sd, stage: newStage } : sd);
 
@@ -397,7 +408,7 @@ function PipelineApp() {
 
     // Frontend stage is lowercase; the API's STAGES array is TitleCase.
     const toStage = newStage.charAt(0).toUpperCase() + newStage.slice(1);
-    window.api.post(`/opportunities/${prev.dbId}/stage`, { to_stage: toStage })
+    window.api.post(`/opportunities/${prev.dbId}/stage`, { to_stage: toStage, reason: reason || undefined })
       .then(() => {
         // Phase 5 — success toast with Undo for stage moves.
         fireToast(`Moved → ${window.STAGE_META[newStage]?.label || newStage}`, {
@@ -756,10 +767,10 @@ function PipelineApp() {
               outcome: data.outcome,
               lost_reason_id: data.lost_reason_id,
               lost_notes: data.lost_notes,
+              won_reason: data.won_reason,
+              won_note: data.won_note,
+              signing_price: data.signing_price,
             })
-              .then(() => (data.outcome === 'Won' && data.signing_price != null)
-                ? window.api.put(`/opportunities/${deal.dbId}`, { signing_price: data.signing_price })
-                : null)
               .then(() => {
                 setDeals(ds => ds.map(d => d.id === deal.id
                   ? { ...d, status: data.outcome, stage: 'closing',

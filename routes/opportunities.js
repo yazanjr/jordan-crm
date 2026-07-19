@@ -238,6 +238,9 @@ router.post('/', requirePerm('opps.create'), (req, res) => {
     close_date, notes, salesman_id,
   } = req.body;
   if (!title) return res.status(400).json({ error: 'title is required.' });
+  // Decision 4: every new deal must link to an Account so H3 (revenue-by-customer)
+  // works. The New Deal form already creates/links the org and sends org_id.
+  if (!org_id) return res.status(400).json({ error: 'org_id (account) is required — link or create a customer.' });
 
   const assignedSalesman = salesman_id || req.user.id;
   const result = db.prepare(`
@@ -320,24 +323,27 @@ router.post('/:id/stage', requirePerm('opps.change_stage'), (req, res) => {
   if (!opp) return res.status(404).json({ error: 'Opportunity not found.' });
   if (opp.status !== 'Active') return res.status(400).json({ error: 'Cannot change stage of a closed opportunity.' });
 
-  const { to_stage } = req.body;
+  const { to_stage, reason, reason_note } = req.body;
   if (!STAGES.includes(to_stage)) return res.status(400).json({ error: 'Invalid stage.' });
   if (to_stage === opp.stage) return res.json({ success: true, stage: to_stage });
 
-  // Backward moves are allowed — deals stall and regress. Every move is logged below.
+  // Backward moves are allowed — deals stall and regress — but a REGRESS must carry
+  // a reason (that's where diagnostic signal lives; forward advances don't require one).
+  const isRegress = STAGES.indexOf(to_stage) < STAGES.indexOf(opp.stage);
+  if (isRegress && (!reason || !String(reason).trim())) {
+    return res.status(400).json({ error: 'A reason is required when moving a deal backward.' });
+  }
   // Moving to Tender still requires a released quotation.
   if (to_stage === 'Tender') {
     const released = db.prepare(`SELECT id FROM quotations WHERE opp_id = ? AND status = 'Released'`).get(opp.id);
     if (!released) return res.status(400).json({ error: 'A released quotation is required before moving to Tender.' });
   }
 
-  const now      = new Date();
-  const created  = new Date(opp.created_at);
-  const seconds  = Math.floor((now - created) / 1000);
-
+  // NOTE: seconds_in_prev is deprecated (it measured deal age, not stage time, and had a
+  // TZ bug). Reports derive time-in-stage from changed_at deltas. Kept nulled for back-compat.
   db.prepare(`UPDATE opportunities SET stage=?, updated_at=datetime('now') WHERE id=?`).run(to_stage, opp.id);
-  db.prepare(`INSERT INTO stage_history (opp_id, from_stage, to_stage, changed_by, seconds_in_prev) VALUES (?,?,?,?,?)`)
-    .run(opp.id, opp.stage, to_stage, req.user.id, seconds);
+  db.prepare(`INSERT INTO stage_history (opp_id, from_stage, to_stage, changed_by, reason, reason_note) VALUES (?,?,?,?,?,?)`)
+    .run(opp.id, opp.stage, to_stage, req.user.id, reason || null, reason_note || null);
 
   notify(req.io, [opp.salesman_id], 'stage_change', `Opportunity "${opp.title}" moved to ${to_stage}`, opp.id);
   res.json({ success: true, stage: to_stage });
@@ -363,24 +369,47 @@ router.post('/:id/assign-designer', requirePerm('opps.assign_designer'), (req, r
   res.json({ success: true });
 });
 
+// Structured reason picklists — mirror the schema CHECKs, validate here for clean 400s.
+const WON_REASONS = ['price', 'product fit', 'delivery time', 'relationship', 'spec locked to us', 'incumbent', 'other'];
+
 // POST /api/opportunities/:id/close
 router.post('/:id/close', requirePerm('opps.close'), (req, res) => {
-  const { outcome, lost_reason_id, lost_notes } = req.body; // outcome: 'Won' | 'Lost'
+  const { outcome, lost_reason_id, lost_notes, won_reason, won_note, signing_price } = req.body; // outcome: 'Won' | 'Lost'
   const opp = db.prepare('SELECT * FROM opportunities WHERE id = ?').get(req.params.id);
   if (!opp) return res.status(404).json({ error: 'Not found.' });
   if (opp.status !== 'Active') return res.status(400).json({ error: 'Already closed.' });
   if (!['Won', 'Lost'].includes(outcome)) return res.status(400).json({ error: 'outcome must be Won or Lost.' });
-  if (outcome === 'Lost' && !lost_reason_id) return res.status(400).json({ error: 'lost_reason_id is required when closing as Lost.' });
+
+  // Every close captures a structured reason (Phase 5 principle #1).
+  if (outcome === 'Lost') {
+    if (!lost_reason_id) return res.status(400).json({ error: 'lost_reason_id is required when closing as Lost.' });
+    if (!lost_notes || !String(lost_notes).trim()) return res.status(400).json({ error: 'lost_notes is required when closing as Lost.' });
+  }
+  let signed = null;
+  if (outcome === 'Won') {
+    // signing_price is the actual signed amount — the revenue figure the diagnostic
+    // (H3) layer depends on. Required so revenue stops being a forecast.
+    signed = Number(signing_price);
+    if (!(signed > 0)) return res.status(400).json({ error: 'signing_price (the actual signed amount) is required when closing as Won.' });
+    if (!won_reason || !WON_REASONS.includes(won_reason)) {
+      return res.status(400).json({ error: `won_reason is required and must be one of: ${WON_REASONS.join(', ')}` });
+    }
+  }
 
   db.prepare(`
     UPDATE opportunities
-       SET status=?, lost_reason_id=?, lost_notes=?, stage='Closing',
+       SET status=?, lost_reason_id=?, lost_notes=?, won_reason=?, won_note=?,
+           signing_price=COALESCE(?, signing_price), stage='Closing',
            closed_at=datetime('now'), closed_by=?, updated_at=datetime('now')
      WHERE id=?
-  `).run(outcome, lost_reason_id || null, lost_notes || null, req.user.id, opp.id);
+  `).run(outcome, lost_reason_id || null, lost_notes || null,
+         outcome === 'Won' ? won_reason : null, outcome === 'Won' ? (won_note || null) : null,
+         signed, req.user.id, opp.id);
 
-  db.prepare(`INSERT INTO stage_history (opp_id, from_stage, to_stage, changed_by) VALUES (?,?,?,?)`)
-    .run(opp.id, opp.stage, outcome, req.user.id);
+  // Capture the reason on the transition too, so stage_history is self-describing.
+  const closeReason = outcome === 'Won' ? won_reason : (db.prepare(`SELECT label FROM lost_reasons WHERE id=?`).get(lost_reason_id) || {}).label;
+  db.prepare(`INSERT INTO stage_history (opp_id, from_stage, to_stage, changed_by, reason, reason_note) VALUES (?,?,?,?,?,?)`)
+    .run(opp.id, opp.stage, outcome, req.user.id, closeReason || null, outcome === 'Won' ? (won_note || null) : (lost_notes || null));
 
   const mgrs = db.prepare(`SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id WHERE r.name IN ('sales_manager','admin')`).all();
   notify(req.io, [...mgrs.map(m => m.id), opp.salesman_id, opp.designer_id],
