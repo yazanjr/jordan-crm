@@ -2,41 +2,32 @@
 // green sidebar and the colored Kanban columns below; orange underline ties
 // the page identity to the brand primary.
 
-function TopBar({ title = 'Pipeline', tabs = [], activeTab, onTab, right }) {
+function TopBar({ title = 'Pipeline', tabs = [], activeTab, onTab, right, showBreadcrumb = true }) {
   const { ChevDown, ChevRight } = window.Icons;
 
   return (
     <header style={{
       borderBottom: '1px solid var(--border-subtle)',
       background: 'linear-gradient(180deg, var(--img-orange-50) 0%, #FFFDFA 100%)',
-      padding: '12px 24px 0',
+      padding: '10px 24px 0',
       position: 'sticky', top: 0, zIndex: 10,
     }}>
-      {/* Top row: breadcrumbs + actions */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, paddingBottom: 8 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--fg-secondary)' }}>
+      {showBreadcrumb ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--fg-secondary)', paddingBottom: 6 }}>
           <span>Workspace</span>
           <ChevRight size={12} />
           <span>Sales</span>
           <ChevRight size={12} />
           <span style={{ color: 'var(--fg-primary)', fontWeight: 600 }}>{title}</span>
         </div>
+      ) : null}
+
+      {/* Single compact row: orange bar + title on the left, actions on the right */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingBottom: tabs.length > 0 ? 8 : 10 }}>
+        <span style={{ width: 4, height: 20, borderRadius: 2, background: 'var(--img-orange)' }}></span>
+        <h1 className="t-h1" style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: '-0.02em' }}>{title}</h1>
         <div style={{ flex: 1 }}></div>
         {right}
-      </div>
-
-      {/* Title row — orange leading bar + title */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingBottom: 12 }}>
-        <span style={{
-          width: 4, height: 22, borderRadius: 2,
-          background: 'var(--img-orange)',
-        }}></span>
-        <h1 className="t-h1" style={{ margin: 0, fontSize: 24, fontWeight: 700, letterSpacing: '-0.02em' }}>{title}</h1>
-        <button style={{
-          width: 22, height: 22, border: 'none', background: 'transparent',
-          color: 'var(--fg-secondary)', cursor: 'pointer', borderRadius: 4,
-          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        }}><ChevDown size={16} /></button>
       </div>
 
       {/* Tabs */}

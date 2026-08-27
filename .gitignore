@@ -8,3 +8,7 @@ uploads/
 Thumbs.db
 **/Thumbs.db
 .DS_Store
+
+# Windows Explorer junk
+desktop.ini
+**/desktop.ini

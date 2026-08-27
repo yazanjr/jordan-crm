@@ -84,18 +84,19 @@ function DealDetail({ deal, onClose, onAdvance, onMore, onUpdate, onAction,
 
   return (
     <>
-      {/* Backdrop */}
+      {/* Backdrop — click to close; also centers the modal card. */}
       <div onClick={onClose} style={{
-        position: 'fixed', inset: 0, background: 'rgba(40, 38, 36, 0.32)',
+        position: 'fixed', inset: 0, background: 'rgba(40, 38, 36, 0.42)',
         zIndex: 100, animation: 'fadeIn 180ms cubic-bezier(0.2, 0, 0, 1)',
-      }}></div>
-
-      {/* Drawer */}
-      <aside style={{
-        position: 'fixed', right: 0, top: 0, bottom: 0, width: 460,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+      }}>
+      {/* Centered modal */}
+      <aside onClick={e => e.stopPropagation()} style={{
+        width: 'min(620px, 96vw)', maxHeight: '90vh',
         background: 'var(--bg-surface)', boxShadow: 'var(--shadow-xl)',
         zIndex: 101, display: 'flex', flexDirection: 'column',
-        animation: 'slideIn 280ms cubic-bezier(0.16, 1, 0.3, 1)',
+        borderRadius: 12,
+        animation: 'fadeIn 200ms cubic-bezier(0.16, 1, 0.3, 1)',
         overflow: 'hidden',
       }}>
         {/* Header */}
@@ -553,6 +554,7 @@ function DealDetail({ deal, onClose, onAdvance, onMore, onUpdate, onAction,
           )}
         </div>
       </aside>
+      </div>
       <style>{`
         @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }

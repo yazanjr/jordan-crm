@@ -1,7 +1,7 @@
 // Toolbar — Monday-style row above the table/board.
 // "+ New deal" pill button (orange), search, person filter, filter, group-by, view switch.
 
-function Toolbar({ view = 'kanban', onViewChange, onNewDeal, search, setSearch, onPerson, onFilter, onGroupBy, onMore, person, filterCount, groupBy }) {
+function Toolbar({ view = 'kanban', onViewChange, onNewDeal, search, setSearch, onPerson, onFilter, onGroupBy, onMore, person, filterCount, groupBy, hidePersonFilter = false }) {
   const { Plus, Search, Filter, Layers, Layout, Table, Kanban, ChevDown, More } = window.Icons;
 
   const baseBtn = {
@@ -59,16 +59,20 @@ function Toolbar({ view = 'kanban', onViewChange, onNewDeal, search, setSearch, 
         />
       </div>
 
-      <button style={baseBtn} onMouseEnter={onHover} onMouseLeave={offHover}
-        onClick={e => onPerson?.(e.currentTarget.getBoundingClientRect())}>
-        {person ? <window.Avatar name={person} size={16} /> : <span style={{ width: 16, height: 16, borderRadius: '50%', border: '1px dashed var(--border-default)' }}></span>}
-        {person || 'Person'}
-      </button>
-      <button style={baseBtn} onMouseEnter={onHover} onMouseLeave={offHover}
-        onClick={e => onFilter?.(e.currentTarget.getBoundingClientRect())}>
-        <Filter size={14} /> Filter
-        {filterCount > 0 && <span style={{ background: 'var(--img-orange)', color: '#fff', fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 999 }}>{filterCount}</span>}
-      </button>
+      {!hidePersonFilter && (
+        <button style={baseBtn} onMouseEnter={onHover} onMouseLeave={offHover}
+          onClick={e => onPerson?.(e.currentTarget.getBoundingClientRect())}>
+          {person ? <window.Avatar name={person} size={16} /> : <span style={{ width: 16, height: 16, borderRadius: '50%', border: '1px dashed var(--border-default)' }}></span>}
+          {person || 'Person'}
+        </button>
+      )}
+      {!hidePersonFilter && (
+        <button style={baseBtn} onMouseEnter={onHover} onMouseLeave={offHover}
+          onClick={e => onFilter?.(e.currentTarget.getBoundingClientRect())}>
+          <Filter size={14} /> Filter
+          {filterCount > 0 && <span style={{ background: 'var(--img-orange)', color: '#fff', fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 999 }}>{filterCount}</span>}
+        </button>
+      )}
       <button style={baseBtn} onMouseEnter={onHover} onMouseLeave={offHover}
         onClick={e => onGroupBy?.(e.currentTarget.getBoundingClientRect())}>
         <Layers size={14} /> Group by {groupBy && <span style={{ color: 'var(--img-orange-700)', fontWeight: 600 }}>{groupBy}</span>} <ChevDown size={12} style={{ marginLeft: -2, opacity: 0.6 }} />

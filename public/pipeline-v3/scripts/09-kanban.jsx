@@ -39,7 +39,8 @@ function KanbanBoard({ deals, setDeals, onSelectDeal, onUpdateDeal, onStageChang
 
   return (
     <div style={{
-      flex: 1, overflow: 'auto', padding: '16px 24px 24px',
+      width: 'max-content', minWidth: '100%',
+      padding: '16px 24px 24px',
       background: 'var(--neutral-50)',
       display: 'flex', gap: 12, alignItems: 'flex-start',
     }}>
@@ -61,7 +62,7 @@ function KanbanBoard({ deals, setDeals, onSelectDeal, onUpdateDeal, onStageChang
               border: `1px solid ${isOver ? meta.fg : 'transparent'}`,
               borderRadius: 12,
               display: 'flex', flexDirection: 'column',
-              maxHeight: 'calc(100vh - 200px)',
+              maxHeight: 'calc(100vh - 145px)',
               overflow: 'hidden',
               boxShadow: isOver ? `0 0 0 3px ${meta.fg}33` : 'none',
               transition: 'box-shadow 120ms, border-color 120ms',
@@ -116,11 +117,11 @@ function KanbanBoard({ deals, setDeals, onSelectDeal, onUpdateDeal, onStageChang
               <span className="t-num" style={{ fontWeight: 700 }}>{window.formatJODshort(total)}</span>
             </div>
 
-            {/* Cards */}
+            {/* Cards — scroll within this stage when it holds many deals. */}
             <div style={{
               display: 'flex', flexDirection: 'column', gap: 8,
               padding: '10px 10px 12px',
-              overflow: 'auto', flex: 1,
+              overflowY: 'auto', flex: 1,
             }}>
               {stageDeals.map(d => {
                 const isLockedOut = lock.has(d.stage);

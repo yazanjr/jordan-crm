@@ -68,7 +68,7 @@ function adaptOppFromApi(row) {
 }
 
 function PipelineApp() {
-  const { Briefcase, Trend, Import, Zap, Bell, Search, ChevDown, Plus, Layers, Eye, Check } = window.Icons;
+  const { Briefcase, Trend, Import, Zap, Bell, Search, ChevDown, Plus, Layers, Eye, Check, Kanban, Table, More } = window.Icons;
 
   // ---- Core state ----
   const [deals, setDeals] = useState(window.DEALS);
@@ -295,12 +295,12 @@ function PipelineApp() {
   const DEFAULT_MODULES = /*EDITMODE-BEGIN*/{
     "showSavedViews": true,
     "showImport": true,
-    "showAutomate": true,
-    "showInvite": true,
-    "showCommandPalette": true,
+    "showAutomate": false,
+    "showInvite": false,
+    "showCommandPalette": false,
     "showProbabilityBadge": true,
     "showColumnTotals": true,
-    "showBreadcrumbs": true,
+    "showBreadcrumbs": false,
     "showActivityFeed": true,
     "showFilesSection": true
   }/*EDITMODE-END*/;
@@ -516,18 +516,28 @@ function PipelineApp() {
   };
 
   const topRight = (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-      {modules.showCommandPalette && (
-        <button onClick={() => setPaletteOpen(true)} style={{
-          ...tbBtn, gap: 8,
-          border: '1px solid var(--border-default)', background: 'var(--bg-surface)',
-          color: 'var(--fg-secondary)', borderRadius: 7, paddingLeft: 10, paddingRight: 8,
-        }}>
-          <Search size={13} />
-          <span>Quick search</span>
-          <span className="t-mono" style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, background: 'var(--neutral-100)' }}>⌘K</span>
-        </button>
-      )}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+      {/* Search — moved up into the title bar */}
+      <div style={{ position: 'relative' }}>
+        <Search size={14} style={{ position: 'absolute', left: 9, top: '50%', transform: 'translateY(-50%)', color: 'var(--fg-tertiary)' }} />
+        <input value={search ?? ''} onChange={e => setSearch(e.target.value)} placeholder="Search"
+          style={{ height: 32, padding: '0 10px 0 28px', border: '1px solid var(--border-default)', background: 'var(--bg-surface)', borderRadius: 7, fontSize: 13, width: 160, color: 'var(--fg-primary)', outline: 'none', fontFamily: 'inherit' }} />
+      </div>
+
+      {/* View switch */}
+      <div style={{ display: 'inline-flex', padding: 2, borderRadius: 8, background: 'var(--neutral-100)', gap: 2 }}>
+        {[{ id: 'kanban', label: 'Kanban', icon: Kanban }, { id: 'table', label: 'Table', icon: Table }].map(v => {
+          const isActive = view === v.id;
+          return (
+            <button key={v.id} onClick={() => setView(v.id)} style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', height: 26, borderRadius: 6, border: 'none',
+              background: isActive ? 'var(--bg-surface)' : 'transparent', color: isActive ? 'var(--fg-primary)' : 'var(--fg-secondary)',
+              fontSize: 12, fontWeight: isActive ? 600 : 500, cursor: 'pointer', boxShadow: isActive ? 'var(--shadow-xs)' : 'none',
+            }}><v.icon size={14} /> {v.label}</button>
+          );
+        })}
+      </div>
+
       {/* Discount-approval inbox — sales managers + admins only. */}
       {['Sales Manager', 'Admin'].includes(window.CURRENT_USER?.role) && (
         <button style={tbBtn}
@@ -538,18 +548,31 @@ function PipelineApp() {
         </button>
       )}
       {modules.showImport && <button style={tbBtn} onClick={() => openModal('import')} onMouseEnter={e => e.currentTarget.style.background='var(--bg-hover)'} onMouseLeave={e => e.currentTarget.style.background='transparent'}><Import size={14} /> Import</button>}
-      {modules.showAutomate && <button style={tbBtn} onClick={() => openModal('automate')} onMouseEnter={e => e.currentTarget.style.background='var(--bg-hover)'} onMouseLeave={e => e.currentTarget.style.background='transparent'}><Zap size={14} /> Automate</button>}
-      {modules.showInvite && (
-        <button onClick={() => openModal('invite')} style={{ ...tbBtn, padding: '6px 14px', height: 32, background: '#fff', border: '1px solid var(--border-default)', borderRadius: 7 }}>
-          Invite team
-        </button>
-      )}
+      <button style={tbBtn} title="More options" onClick={e => openPop('toolbarmore', e.currentTarget.getBoundingClientRect())}
+        onMouseEnter={e => e.currentTarget.style.background='var(--bg-hover)'} onMouseLeave={e => e.currentTarget.style.background='transparent'}>
+        <More size={16} />
+      </button>
+
+      {/* New deal — primary action, moved up into the title bar */}
+      <button onClick={() => openModal('newdeal')} style={{
+        display: 'inline-flex', alignItems: 'center', height: 32,
+        background: 'var(--img-orange)', color: '#fff', border: 'none',
+        borderRadius: 999, paddingLeft: 14, paddingRight: 4, fontWeight: 600, fontSize: 13,
+        cursor: 'pointer', boxShadow: 'inset 0 -1px 0 rgba(0,0,0,0.08)',
+      }}
+        onMouseEnter={e => e.currentTarget.style.background = 'var(--img-orange-600)'}
+        onMouseLeave={e => e.currentTarget.style.background = 'var(--img-orange)'}>
+        New deal
+        <span style={{ marginLeft: 10, width: 24, height: 24, borderRadius: '50%', background: 'rgba(255,255,255,0.2)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+          <ChevDown size={14} />
+        </span>
+      </button>
     </div>
   );
 
   return (
     <>
-      <window.Sidebar
+      <window.TopNav
         active={activeNav}
         onNav={(id) => {
           if (id === 'contacts')     { window.location.href = 'Contacts.html'; return; }
@@ -563,38 +586,35 @@ function PipelineApp() {
         }}
         onUserMenu={(rect) => openPop('user', rect)}
         onNotifications={(rect) => openPop('notif', rect)}
-        showSavedViews={modules.showSavedViews}
       />
 
-      <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+      <main style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         <window.TopBar
           title="Pipeline"
-          tabs={[
-            { id: 'main',  label: 'Main pipeline', icon: Briefcase },
-            { id: 'q3',    label: 'Q3 forecast',   icon: Trend },
-            { id: 'amman', label: 'Amman region',  icon: Briefcase },
-          ]}
-          activeTab="main"
+          tabs={[]}
           right={topRight}
-          showBreadcrumbs={modules.showBreadcrumbs}
+          showBreadcrumb={modules.showBreadcrumbs}
         />
 
-        <window.Toolbar
-          view={view}
-          onViewChange={setView}
-          search={search}
-          setSearch={setSearch}
-          onNewDeal={() => openModal('newdeal')}
-          onPerson={(rect) => openPop('person', rect)}
-          onFilter={(rect) => openPop('filter', rect)}
-          onGroupBy={(rect) => openPop('groupby', rect)}
-          onMore={(rect) => openPop('toolbarmore', rect)}
-          person={person}
-          filterCount={filterCount}
-          groupBy={groupByLabel}
-        />
+        {/* ONE scroll surface. The filter cards live INSIDE it so they scroll
+            away; the board's stage headers pin to the top instead. New deal,
+            search and the view switch now live up in the title bar. */}
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+          <window.FilterPanel
+            filterKeys={FILTER_KEYS}
+            filterOptions={filterOptions}
+            filters={filters}
+            setFilters={setFilters}
+            person={person}
+            setPerson={setPerson}
+            deals={deals}
+          />
 
-        {view === 'kanban' ? (
+          {/* Board sticks to the top of the surface: once the toolbar + filters
+              scroll away, the stage headers freeze here and the cards scroll
+              inside each column. Horizontal scroll stays for the columns. */}
+          <div style={{ position: 'sticky', top: 0, zIndex: 5, overflowX: 'auto', background: 'var(--neutral-50)' }}>
+          {view === 'kanban' ? (
           <window.KanbanBoard
             deals={kanbanDeals}
             setDeals={setDeals}
@@ -637,7 +657,9 @@ function PipelineApp() {
             onRenameColumn={renameTableColumn}
             onResizeColumn={resizeTableColumn}
           />
-        )}
+          )}
+          </div>
+        </div>
       </main>
 
       {selectedDeal && (
