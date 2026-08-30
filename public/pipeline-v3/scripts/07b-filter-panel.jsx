@@ -15,7 +15,7 @@ function FilterPanel({ filterKeys, filterOptions, filters, setFilters, person, s
   // Human labels for the raw field keys.
   const LABELS = {
     district: 'Location', status: 'Status', stage: 'Stage', system: 'System',
-    subSystem: 'Sub-system', brand: 'Brand', installationBy: 'Installation By', segment: 'Segment',
+    productGroup: 'Product Group', brand: 'Brand', installationBy: 'Installation By', segment: 'Segment',
   };
 
   // Owners present in the data → the "Person" card options.
@@ -32,6 +32,11 @@ function FilterPanel({ filterKeys, filterOptions, filters, setFilters, person, s
     (deals || []).forEach(d => {
       if (d.owner) out.__person[d.owner] = (out.__person[d.owner] || 0) + 1;
       (filterKeys || []).forEach(k => {
+        if (k === 'productGroup') {
+          // Multi-select field: tally each group the deal belongs to.
+          (d.productGroups || []).forEach(g => { if (g) out[k][g] = (out[k][g] || 0) + 1; });
+          return;
+        }
         const v = d[k];
         if (v != null && v !== '') out[k][v] = (out[k][v] || 0) + 1;
       });

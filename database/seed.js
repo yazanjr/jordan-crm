@@ -138,7 +138,7 @@ const settings = [
   { key: 'lost_reasons',        value: JSON.stringify(['Price too high','Competitor won','Project canceled','Customer unresponsive','Scope mismatch','Budget not approved','Went with alternative solution','Other']), type: 'list', description: 'Predefined lost reasons' },
   { key: 'lead_sources',        value: JSON.stringify(['Walk-in','Internet','Consultant','Contractor','Mapping','Referral','Customer']), type: 'list', description: 'Opportunity sources' },
   { key: 'segments',            value: JSON.stringify(['Commercial','Residential','Government','Industrial']), type: 'list', description: 'Market segments' },
-  { key: 'product_groups',      value: JSON.stringify(['VRF','Split','Chiller','Ducted','Fan Coils','AHU']), type: 'list', description: 'Product categories' },
+  { key: 'product_groups',      value: JSON.stringify(['VRF','Wall-mounted Split','Cassette','Ducted','Floor-standing / Ceiling','Chillers','AHU','Fan Coils','Controls & Accessories','Plumbing']), type: 'list', description: 'Product categories (multi-select on deals)' },
   { key: 'activity_types',      value: JSON.stringify(['Call','Meeting','Task','Deadline']),      type: 'list',   description: 'Activity types' },
   { key: 'currencies',          value: JSON.stringify(['JOD','USD','EUR']),                      type: 'list',   description: 'Available currencies' },
 ];

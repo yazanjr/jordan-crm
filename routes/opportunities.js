@@ -33,15 +33,16 @@ router.get('/meta/users', (req, res) => {
   res.json(rows);
 });
 
-// GET /api/opportunities/meta/product-groups — live + baseline merged.
-// Returns the union of distinct product_group values in opportunities and a
-// hardcoded baseline so the New Deal modal always shows the IMG core list.
+// GET /api/opportunities/meta/product-groups — the editable master list.
+// Source of truth is the `product_groups` setting (managed in the Settings page);
+// falls back to the IMG baseline. NOT merged with raw deal values, because
+// product_group now stores a JSON array (multi-select) that would pollute the list.
+const PRODUCT_GROUP_BASELINE = ['VRF', 'Wall-mounted Split', 'Cassette', 'Ducted', 'Floor-standing / Ceiling', 'Chillers', 'AHU', 'Fan Coils', 'Controls & Accessories', 'Plumbing'];
 router.get('/meta/product-groups', (req, res) => {
-  const BASELINE = ['VRF Systems', 'Split Units', 'Chiller Systems', 'Ducted Units', 'Fan Coils', 'AHU', 'Heating', 'Plumbing'];
-  const live = db.prepare(`SELECT DISTINCT product_group FROM opportunities WHERE product_group IS NOT NULL AND TRIM(product_group) != ''`)
-    .all().map(r => r.product_group);
-  const merged = Array.from(new Set([...BASELINE, ...live])).sort((a, b) => a.localeCompare(b));
-  res.json(merged);
+  let list = null;
+  const row = db.prepare(`SELECT value FROM settings WHERE key = 'product_groups'`).get();
+  if (row && row.value) { try { const p = JSON.parse(row.value); if (Array.isArray(p) && p.length) list = p; } catch {} }
+  res.json(list || PRODUCT_GROUP_BASELINE);
 });
 
 // GET /api/opportunities/meta/areas — managed "Project Location" list.

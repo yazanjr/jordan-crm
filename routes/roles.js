@@ -1,10 +1,12 @@
 const express = require('express');
 const db      = require('../database/db');
 const authMw  = require('../middleware/auth');
+const demoAuth = require('../middleware/demoAuth');
 const { requirePerm, clearPermCache } = require('../middleware/permission');
 
 const router = express.Router();
-router.use(authMw);
+// Demo mode (same as opportunities/design) until real login is turned on at go-live.
+router.use(demoAuth);
 
 // GET /api/roles  — list all roles with their permissions
 router.get('/', (req, res) => {

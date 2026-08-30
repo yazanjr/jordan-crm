@@ -22,6 +22,15 @@ function adaptOppFromApi(row) {
   const owner = window.findUserByFirstName
     ? window.findUserByFirstName(row.salesman_name)
     : null;
+  // product_group is now a multi-select stored as a JSON array string.
+  // Handle new arrays, legacy single strings, and null uniformly.
+  const productGroups = (() => {
+    const raw = row.product_group;
+    if (!raw) return [];
+    const s = String(raw).trim();
+    if (s.startsWith('[')) { try { const a = JSON.parse(s); return Array.isArray(a) ? a : []; } catch { return []; } }
+    return [s];
+  })();
   return {
     id:           `OPP-${row.id}`,
     dbId:         row.id,
@@ -36,7 +45,8 @@ function adaptOppFromApi(row) {
     owner:        owner ? owner.name : (row.salesman_name || ''),
     ownerId:      owner ? owner.id   : null,
     probability:  (window.STAGE_PROBABILITY || {})[finalStage] ?? 0,
-    scope:        row.product_group || null,
+    scope:        productGroups.join(', ') || null,
+    productGroups,
     closeDate:    row.close_date    || null,
     closeQuarter: null,
     age:          row.created_at ? Math.floor((Date.now() - new Date(row.created_at).getTime()) / 86400000) : 0,
@@ -339,12 +349,15 @@ function PipelineApp() {
 
   // ---- Filter option lists, derived from the loaded deals ----
   // Each of the 8 filters offers exactly the values that actually occur in the data.
-  const FILTER_KEYS = ['district', 'status', 'stage', 'system', 'subSystem', 'brand', 'installationBy', 'segment'];
+  // 'productGroup' replaces the old 'subSystem' — it IS the deal's product groups
+  // (multi-select), so the filter and the New Deal form share one source of truth.
+  const FILTER_KEYS = ['district', 'status', 'stage', 'system', 'productGroup', 'brand', 'installationBy', 'segment'];
   const filterOptions = useMemo(() => {
     const out = {};
     FILTER_KEYS.forEach(k => {
       if (k === 'stage') { out[k] = (window.STAGE_ORDER || []).slice(); return; }
       if (k === 'district') { out[k] = (window.AREAS || []).slice(); return; }  // curated Project Location list
+      if (k === 'productGroup') { out[k] = (window.PRODUCT_GROUPS || []).slice(); return; }  // master list, editable in Settings
       const seen = new Set();
       deals.forEach(d => { const v = d[k]; if (v != null && v !== '') seen.add(v); });
       out[k] = [...seen].sort((a, b) => String(a).localeCompare(String(b)));
@@ -366,7 +379,13 @@ function PipelineApp() {
     }
     if (person) list = list.filter(d => d.owner === person);
     FILTER_KEYS.forEach(k => {
-      if (filters[k]?.length) list = list.filter(d => filters[k].includes(d[k]));
+      if (!filters[k]?.length) return;
+      if (k === 'productGroup') {
+        // Array field: a deal matches if ANY of its groups is selected.
+        list = list.filter(d => (d.productGroups || []).some(g => filters[k].includes(g)));
+      } else {
+        list = list.filter(d => filters[k].includes(d[k]));
+      }
     });
     return list;
   }, [deals, search, person, filters]);
@@ -738,7 +757,7 @@ function PipelineApp() {
               const created = await window.api.post('/opportunities', {
                 title: data.name,
                 salesman_id: ownerUser ? ownerUser.dbId : undefined,
-                product_group: data.scope || null,
+                product_group: (Array.isArray(data.scope) && data.scope.length) ? JSON.stringify(data.scope) : null,
                 district: area || null,
                 close_date: data.closeDate || null,
                 contact_id: contact_id || null,

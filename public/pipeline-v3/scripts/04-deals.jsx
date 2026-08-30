@@ -75,7 +75,7 @@ window.findOrgByName = (name) => {
 // Baseline kept here so the New Deal modal still renders if the API call
 // hasn't returned yet. window.loadProductGroups() (below) overwrites this
 // with the live list from /api/opportunities/meta/product-groups.
-window.PRODUCT_GROUPS = ['VRF Systems', 'Split Units', 'Chiller Systems', 'Ducted Units', 'Fan Coils', 'AHU', 'Heating', 'Plumbing'];
+window.PRODUCT_GROUPS = ['VRF', 'Wall-mounted Split', 'Cassette', 'Ducted', 'Floor-standing / Ceiling', 'Chillers', 'AHU', 'Fan Coils', 'Controls & Accessories', 'Plumbing'];
 
 window.loadProductGroups = (function () {
   let _p = null;

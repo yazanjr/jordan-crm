@@ -509,7 +509,7 @@ window.AreaCombobox = AreaCombobox;
 function NewDealModal({ onClose, onSubmit }) {
   const me = window.CURRENT_USER;
   const defaultOwner = me ? me.name : (window.SALES_TEAM?.[0]?.name || '');
-  const defaultScope = window.PRODUCT_GROUPS?.[0] || '';
+  const defaultScope = []; // product groups are multi-select now
   const [step, setStep] = React.useState(0);
   const [data, setData] = React.useState({
     name: '', account: '', orgId: null, value: '', stage: 'prospect',
@@ -625,16 +625,28 @@ function NewDealModal({ onClose, onSubmit }) {
               onPick={(o) => setData(d => ({ ...d, account: o.name, orgId: o.id }))}
             />
           </Field>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <Field label="Owner">
-              <Select value={data.owner} onChange={e => set('owner', e.target.value)}
-                options={(window.SALES_TEAM || []).map(u => ({ value: u.name, label: u.name }))} />
-            </Field>
-            <Field label="Product group">
-              <Select value={data.scope} onChange={e => set('scope', e.target.value)}
-                options={(window.PRODUCT_GROUPS || []).map(s => ({ value: s, label: s }))} />
-            </Field>
-          </div>
+          <Field label="Owner">
+            <Select value={data.owner} onChange={e => set('owner', e.target.value)}
+              options={(window.SALES_TEAM || []).map(u => ({ value: u.name, label: u.name }))} />
+          </Field>
+          <Field label="Product groups" hint="Pick all that apply — a deal can cover several systems">
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {(window.PRODUCT_GROUPS || []).map(g => {
+                const on = (data.scope || []).includes(g);
+                return (
+                  <button key={g} type="button"
+                    onClick={() => set('scope', on ? data.scope.filter(x => x !== g) : [...(data.scope || []), g])}
+                    style={{
+                      padding: '5px 11px', borderRadius: 999, fontSize: 12.5, fontWeight: on ? 600 : 500, cursor: 'pointer',
+                      border: `1px solid ${on ? 'var(--img-orange)' : 'var(--border-default)'}`,
+                      background: on ? 'var(--img-orange)' : 'var(--bg-surface)',
+                      color: on ? '#fff' : 'var(--fg-secondary)',
+                      transition: 'all 120ms',
+                    }}>{g}</button>
+                );
+              })}
+            </div>
+          </Field>
           <Field label="Project location"
             hint={(window.AREAS || []).includes(data.district) ? 'Existing area' : (data.district.trim().length >= 2 ? 'New area — will be created on save' : 'Type to search areas, or add a new one')}>
             <window.AreaCombobox
