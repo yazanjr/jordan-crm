@@ -566,13 +566,14 @@ function NewDealModal({ onClose, onSubmit }) {
   const steps = [
     { id: 'basics',  label: 'Basics' },
     { id: 'contact', label: 'Customer contact' },
-    { id: 'stage',   label: 'Stage & value' },
+    { id: 'stage',   label: 'Stage' },
   ];
   const isLast = step === steps.length - 1;
+  // Deal value is intentionally NOT captured here — it comes from design + quotation later.
   const canNext = step === 0 ? data.name && data.account
                 // If a contact is linked, email comes from the record so it's not required.
                 : step === 1 ? data.contactName && (data.contactId || data.contactEmail)
-                : data.value;
+                : true;
 
   return (
     <ModalShell
@@ -715,9 +716,6 @@ function NewDealModal({ onClose, onSubmit }) {
               }
               return opts;
             })()} />
-          </Field>
-          <Field label="Deal value (JOD)" required>
-            <TextInput type="number" value={data.value} onChange={e => set('value', e.target.value)} placeholder="0" />
           </Field>
           <Field label={`Probability — ${data.probability}%`}>
             <input type="range" min="0" max="100" step="5" value={data.probability}

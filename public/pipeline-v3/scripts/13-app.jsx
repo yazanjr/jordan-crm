@@ -740,7 +740,6 @@ function PipelineApp() {
                 salesman_id: ownerUser ? ownerUser.dbId : undefined,
                 product_group: data.scope || null,
                 district: area || null,
-                expected_value: +data.value || 0,
                 close_date: data.closeDate || null,
                 contact_id: contact_id || null,
                 org_id: org_id || null,
