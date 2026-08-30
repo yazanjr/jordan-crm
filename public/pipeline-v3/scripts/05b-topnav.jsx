@@ -12,7 +12,6 @@ function TopNav({ active = 'pipeline', onNav, onUserMenu, onNotifications }) {
       { id: 'pipeline',    icon: Briefcase, label: 'Pipeline' },
       { id: 'contacts',    icon: Users,     label: 'Contacts' },
       { id: 'reports',     icon: Trend,     label: 'Reports' },
-      { id: 'diagnostics', icon: Trend,     label: 'Diagnostics' },
     ],
     [
       { id: 'design-board', icon: Sparkle, label: 'Design Board' },

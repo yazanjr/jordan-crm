@@ -151,6 +151,8 @@ function ReportsApp() {
   useEffect(() => { reloadTargets(); }, [reloadTargets]);
   const roleKey = (window.CURRENT_USER && window.CURRENT_USER.roleKey) || '';
   const canEditTargets = ['admin', 'product_manager'].includes(roleKey);
+  // Diagnostics is management-only (matches the /api/diagnostics backend gate).
+  const canSeeDiagnostics = ['admin', 'product_manager', 'sales_manager', 'design_manager'].includes(roleKey);
 
   // ---------- Derived metrics (all real, computed live) ----------
   const stats = useMemo(() => {
@@ -222,7 +224,6 @@ function ReportsApp() {
         active={activeNav}
         onNav={(id) => {
           if (id === 'pipeline')     { window.location.href = 'Pipeline.html'; return; }
-          if (id === 'diagnostics')  { window.location.href = 'Diagnostics.html'; return; }
           if (id === 'contacts')     { window.location.href = 'Contacts.html'; return; }
           if (id === 'design-board') { window.location.href = 'DesignBoard.html'; return; }
           if (id === 'my-tasks')     { window.location.href = 'MyTasks.html'; return; }
@@ -241,6 +242,7 @@ function ReportsApp() {
             { id: 'overview',    label: 'Overview',    icon: Trend },
             { id: 'pipeline',    label: 'Pipeline',    icon: Briefcase },
             { id: 'design',      label: 'Design',      icon: File },
+            ...(canSeeDiagnostics ? [{ id: 'diagnostics', label: 'Diagnostics', icon: Trend }] : []),
           ]}
           activeTab={activeTab}
           onTab={setActiveTab}
@@ -259,7 +261,9 @@ function ReportsApp() {
         />
 
         <div style={{ flex: 1, overflowY: 'auto', background: 'var(--bg-page)' }}>
-          {activeTab === 'design'
+          {activeTab === 'diagnostics'
+            ? (canSeeDiagnostics ? <window.DiagnosticsTab /> : <div style={{ padding: 40, textAlign: 'center', color: 'var(--fg-tertiary)' }}>Management only.</div>)
+            : activeTab === 'design'
             ? (!designReady ? <div style={{ padding: 40, textAlign: 'center', color: 'var(--fg-tertiary)' }}>Loading…</div>
                : <DesignTab requests={filteredDesignReqs} scope={designScope} />)
             : !dealsReady ? <div style={{ padding: 40, textAlign: 'center', color: 'var(--fg-tertiary)' }}>Loading…</div>

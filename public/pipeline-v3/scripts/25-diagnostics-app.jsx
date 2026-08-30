@@ -2,6 +2,10 @@
 // Every panel is fed by /api/diagnostics/* with a shared date range and the
 // internal-account exclusion toggle. Honest empty states where data hasn't accrued.
 
+// Wrapped in an IIFE so its helpers (Card, KPI, Bars, Empty, Table, …) don't
+// collide with the Reports page's own same-named helpers when both scripts
+// load together. Exposes only window.DiagnosticsTab.
+(function () {
 const { useState, useEffect, useCallback } = React;
 
 const fmtJOD = (n) => n == null ? '—' : 'JOD ' + Math.round(n).toLocaleString('en-US');
@@ -96,7 +100,7 @@ function Panel({ title, subtitle, hypo, path, params, deps, render }) {
 }
 
 // ── app ──────────────────────────────────────────────────────────────────────
-function DiagnosticsApp() {
+function DiagnosticsTab() {
   const { Trend } = window.Icons;
   const [, setReady] = useState(false);
   useEffect(() => { window.loadRealUsers().then(ok => ok && setReady(true)); }, []);
@@ -111,17 +115,9 @@ function DiagnosticsApp() {
   const inp = { height: 32, padding: '0 10px', border: '1px solid var(--border-default)', borderRadius: 7, fontSize: 13, fontFamily: 'inherit' };
 
   return (
-    <>
-      <window.Sidebar active="diagnostics" onNav={(id) => {
-        const map = { pipeline: 'Pipeline.html', contacts: 'Contacts.html', reports: 'Reports.html', 'design-board': 'DesignBoard.html', 'my-tasks': 'MyTasks.html', pricelist: 'Pricelist.html', costing: 'QuotationCosting.html' };
-        if (map[id]) window.location.href = map[id];
-      }} />
-
-      <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        <window.TopBar title="Diagnostics" tabs={[]} showBreadcrumbs={true} right={null} />
-
-        {/* date-range control — the system's first real range picker */}
-        <div style={{ padding: '12px 24px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-surface)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+    <div>
+      {/* date-range control — the system's first real range picker */}
+      <div style={{ padding: '12px 24px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-surface)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', position: 'sticky', top: 0, zIndex: 2 }}>
           <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--fg-secondary)' }}>Date range</span>
           <input type="date" value={draft.start} onChange={e => setDraft(d => ({ ...d, start: e.target.value }))} style={inp} />
           <span style={{ color: 'var(--fg-tertiary)' }}>→</span>
@@ -137,7 +133,7 @@ function DiagnosticsApp() {
           ))}
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto', background: 'var(--bg-page)', padding: 24, display: 'flex', flexDirection: 'column', gap: 26 }}>
+        <div style={{ background: 'var(--bg-page)', padding: 24, display: 'flex', flexDirection: 'column', gap: 26 }}>
           <Section id="H2" title="Close-stage strangulation" desc="Does discount policy kill winnable deals?">
             <Panel hypo="H2·1" title="Discount gap distribution" subtitle="requested − approved %, by outcome" path="h2/discount-gap" params={p} deps={deps}
               render={d => d.total_requests === 0 ? <Empty>No discount-approval requests in range. (Within-limit discounts are auto-approved and leave no row.)</Empty>
@@ -204,8 +200,7 @@ function DiagnosticsApp() {
             Most panels accrue evidence forward from launch — they cannot reconstruct the historical decline.
           </div>
         </div>
-      </main>
-    </>
+    </div>
   );
 }
 
@@ -221,4 +216,5 @@ function Section({ title, desc, children }) {
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<DiagnosticsApp />);
+  window.DiagnosticsTab = DiagnosticsTab;
+})();

@@ -107,7 +107,6 @@ function Sidebar({ active = 'pipeline', onNav, onUserMenu, onNotifications }) {
           <NavItem id="pipeline"    icon={Briefcase} label="Pipeline" />
           <NavItem id="contacts"    icon={Users} label="Contacts" />
           <NavItem id="reports"     icon={Trend} label="Reports" />
-          <NavItem id="diagnostics" icon={Trend} label="Diagnostics" />
         </div>
         {!collapsed && <SectionLabel>Design</SectionLabel>}
         {collapsed && <SectionDivider />}
