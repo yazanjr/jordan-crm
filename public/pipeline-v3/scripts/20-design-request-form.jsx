@@ -236,7 +236,11 @@
       });
     };
 
-    const dbOppId = oppDbMap?.[deal.name];
+    // Prefer the deal's real DB id (always current, present on every API-loaded
+    // deal). Fall back to the title→id map only if dbId is somehow missing.
+    // The old title-only lookup failed for newly created deals (not yet in the
+    // page-load snapshot) and for any title mismatch.
+    const dbOppId = deal.dbId ?? oppDbMap?.[deal.name];
 
     const submit = async () => {
       // Phase 3 — modifications must carry a reason so we can track patterns.
