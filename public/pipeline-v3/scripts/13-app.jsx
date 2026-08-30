@@ -737,7 +737,7 @@ function PipelineApp() {
               const ownerUser = (window.USERS || []).find(u => u.name === data.owner);
               const created = await window.api.post('/opportunities', {
                 title: data.name,
-                salesman_id: ownerUser ? ownerUser.id : undefined,
+                salesman_id: ownerUser ? ownerUser.dbId : undefined,
                 product_group: data.scope || null,
                 district: area || null,
                 expected_value: +data.value || 0,

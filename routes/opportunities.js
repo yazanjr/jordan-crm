@@ -242,7 +242,16 @@ router.post('/', requirePerm('opps.create'), (req, res) => {
   // works. The New Deal form already creates/links the org and sends org_id.
   if (!org_id) return res.status(400).json({ error: 'org_id (account) is required — link or create a customer.' });
 
-  const assignedSalesman = salesman_id || req.user.id;
+  // Coerce a prototype string id ("U003") to its integer form so the
+  // salesman_id → users(id) foreign key never fails. Mirrors demoAuth's parse.
+  const toIntId = (raw) => {
+    if (raw == null || raw === '') return null;
+    const s = String(raw).trim();
+    if (/^U\d+$/i.test(s)) return parseInt(s.slice(1), 10);
+    const n = parseInt(s, 10);
+    return Number.isFinite(n) ? n : null;
+  };
+  const assignedSalesman = toIntId(salesman_id) || req.user.id;
   const result = db.prepare(`
     INSERT INTO opportunities
       (title, contact_id, org_id, source, segment, district, product_group,
