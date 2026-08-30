@@ -1,0 +1,16 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+.claude
+data
+uploads
+.env
+.env.example
+*.log
+Thumbs.db
+**/Thumbs.db
+desktop.ini
+**/desktop.ini
+.DS_Store
+EXECUTION_PLAN.md

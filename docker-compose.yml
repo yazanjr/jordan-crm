@@ -1,0 +1,21 @@
+services:
+  img-crm:
+    build: .
+    container_name: img-crm-jordan
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    environment:
+      - PORT=4000
+      - NODE_ENV=production
+      # The SQLite database file lives on the mounted volume below, so it
+      # survives container rebuilds and restarts.
+      - DB_PATH=/app/data/crm.db
+      - UPLOADS_PATH=/app/uploads
+      # CHANGE THIS to a long random string before going live.
+      - JWT_SECRET=CHANGE_ME_to_a_long_random_secret_string
+      - IMI_PORTAL_URL=http://192.168.68.53:3000
+    volumes:
+      # NAS folder (left) → container folder (right). Create these NAS folders first.
+      - /volume1/Projects/crm-data:/app/data
+      - /volume1/Projects/crm-uploads:/app/uploads
