@@ -4,6 +4,11 @@
 
 const { useState, useMemo, useEffect } = React;
 
+const selBtn = {
+  padding: '5px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600,
+  background: 'var(--bg-surface)', color: 'var(--fg-primary)', border: '1px solid var(--border-default)',
+};
+
 function PricelistApp() {
   const { Search, Plus, Filter, Layers } = window.Icons;
   const me = window.CURRENT_USER;
@@ -24,7 +29,21 @@ function PricelistApp() {
   const [uploading, setUploading] = useState(false);
   const [skuModal, setSkuModal]   = useState(null);  // null | {mode:'add'|'edit', row}
   const [deactivate, setDeactivate] = useState(null); // null | { sku, loading, usage }
+  const [selected, setSelected]   = useState(() => new Set()); // selected SKU ids
+  const [bulkOpen, setBulkOpen]   = useState(false);
+  const [uploadMode, setUploadMode] = useState('merge'); // 'merge' | 'replace'
+  const [busy, setBusy]           = useState(false);
   const fireToast = (msg, opts={}) => setToast({ msg, ...opts });
+
+  // Drop the selection whenever the book or filters change (ids no longer shown).
+  useEffect(() => { setSelected(new Set()); }, [bookId, groupFilter, familyFilter, search]);
+  const toggleSel = (id) => setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const allShownSelected = skus.length > 0 && skus.every(s => selected.has(s.id));
+  const toggleSelAll = () => setSelected(prev => {
+    if (skus.every(s => prev.has(s.id))) { const n = new Set(prev); skus.forEach(s => n.delete(s.id)); return n; }
+    const n = new Set(prev); skus.forEach(s => n.add(s.id)); return n;
+  });
+  const selectedIds = () => [...selected];
 
   const [, setUsersReady] = useState(false);
   useEffect(() => { window.loadRealUsers().then(ok => { if (ok) setUsersReady(true); }); }, []);
@@ -75,25 +94,71 @@ function PricelistApp() {
   const handleUpload = async (file) => {
     if (!file) return;
     if (!bookId) { fireToast('Pick a price book first.', { danger: true }); return; }
+    if (uploadMode === 'replace' && !window.confirm('Replace mode wipes this whole price book and loads only what is in the sheet. Continue?')) return;
     setUploading(true);
     try {
       const fd = new FormData();
       fd.append('file', file);
       fd.append('price_book_id', String(bookId));
-      const r = await fetch('/api/pricelist-versions/upload', {
-        method: 'POST',
-        headers: { 'x-demo-user-id': window.api.userId() },
-        body: fd,
-      });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data?.error || 'Upload failed');
-      fireToast(`Uploaded — ${data.inserted} SKUs replaced (${data.skipped} skipped)`);
+      fd.append('mode', uploadMode);
+      const data = await window.uploadForm('/api/pricelist-versions/upload', fd);
+      const msg = data.mode === 'replace'
+        ? `Replaced book — ${data.inserted} SKUs loaded (${data.retired} retired, ${data.skipped} skipped)`
+        : `Updated ${data.updated} · added ${data.inserted}${data.skipped ? ` · ${data.skipped} skipped` : ''}`;
+      fireToast(msg);
       reload();
     } catch (e) {
       fireToast(`Failed: ${e.message}`, { danger: true });
     } finally {
       setUploading(false);
     }
+  };
+
+  // Build the export URL for the current book, honoring active filters. Pass an
+  // array of ids to export only the selected rows.
+  const exportUrl = (ids) => {
+    const qs = new URLSearchParams({ price_book_id: String(bookId) });
+    if (groupFilter)  qs.set('category_l2', groupFilter);
+    if (familyFilter) qs.set('category_l3', familyFilter);
+    if (search)       qs.set('search', search);
+    if (ids && ids.length) qs.set('ids', ids.join(','));
+    return '/api/product-skus/export?' + qs.toString();
+  };
+  const bookName = () => (booksForBrand.find(b => b.id === bookId) || {}).name || 'pricelist';
+  const doExport = (ids) => {
+    if (!bookId) { fireToast('Pick a price book first.', { danger: true }); return; }
+    const fname = `${bookName()}${ids && ids.length ? `-${ids.length}-selected` : ''}-${new Date().toISOString().slice(0,10)}.xlsx`;
+    window.downloadBlob(exportUrl(ids), fname).catch(e => fireToast(e.message || 'Export failed', { danger: true }));
+  };
+
+  const bulkDeactivate = async (ids, { alsoExport } = {}) => {
+    if (!ids.length) return;
+    if (!window.confirm(`${alsoExport ? 'Export then remove' : 'Remove'} ${ids.length} SKU${ids.length === 1 ? '' : 's'}? They are retired (hidden), so existing quotations keep working.`)) return;
+    setBusy(true);
+    try {
+      if (alsoExport) doExport(ids);
+      const r = await window.api.post('/product-skus/bulk-deactivate', { ids });
+      fireToast(`Removed ${r.deactivated} SKU${r.deactivated === 1 ? '' : 's'}`);
+      setSelected(new Set());
+      reload();
+    } catch (e) { fireToast(`Failed: ${e.message}`, { danger: true }); }
+    finally { setBusy(false); }
+  };
+
+  const clearBook = async () => {
+    if (!bookId) { fireToast('Pick a price book first.', { danger: true }); return; }
+    if (!window.confirm(`Download a backup of "${bookName()}" and then retire ALL its ${skus.length}+ SKUs? Existing quotations keep their snapshots.`)) return;
+    setBusy(true);
+    try {
+      doExport(null); // full-book backup first
+      const all = await window.api.get('/product-skus?' + new URLSearchParams({ price_book_id: String(bookId) }).toString());
+      const ids = all.map(s => s.id);
+      const r = await window.api.post('/product-skus/bulk-deactivate', { ids });
+      fireToast(`Backed up & retired ${r.deactivated} SKUs`);
+      setSelected(new Set());
+      reload();
+    } catch (e) { fireToast(`Failed: ${e.message}`, { danger: true }); }
+    finally { setBusy(false); }
   };
 
   const canSeeCosts = me && (me.role === 'Product Manager' || me.role === 'Admin' || me.isSenior);
@@ -110,6 +175,7 @@ function PricelistApp() {
           if (id === 'design-board') { window.location.href = 'DesignBoard.html'; return; }
           if (id === 'costing')      { window.location.href = 'QuotationCosting.html'; return; }
           if (id === 'my-tasks') { window.location.href = 'MyTasks.html'; return; }
+          if (id === 'settings') { window.location.href = 'Settings.html'; return; }
         }}
         onUserMenu={(rect) => setPopover({ kind: 'user', rect })}
         onNotifications={(rect) => setPopover({ kind: 'notif', rect })}
@@ -171,23 +237,39 @@ function PricelistApp() {
               <span style={{ flex: 1 }}></span>
               <span style={{ fontSize: 12, color: 'var(--fg-secondary)' }}>{skus.length} SKUs</span>
               <button onClick={() => bookId ? setSkuModal({ mode: 'add', row: null }) : fireToast('Pick a price book first.', { danger: true })}
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 6,
-                  padding: '6px 12px', borderRadius: 7, cursor: 'pointer',
-                  background: 'var(--bg-surface)', color: 'var(--img-orange-700, #B8680E)',
-                  border: '1px solid var(--img-orange)', fontSize: 13, fontWeight: 600,
-                }}>+ Add SKU</button>
-              <label style={{
-                display: 'inline-flex', alignItems: 'center', gap: 6,
-                padding: '6px 12px', borderRadius: 7, cursor: uploading ? 'wait' : 'pointer',
-                background: 'var(--img-orange)', color: '#fff', fontSize: 13, fontWeight: 600,
-              }}>
-                {uploading ? 'Uploading…' : '⬆ Upload pricelist'}
-                <input type="file" accept=".xlsx,.xls" disabled={uploading}
-                  onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; handleUpload(f); }}
-                  style={{ display: 'none' }} />
-              </label>
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 7, cursor: 'pointer', background: 'var(--bg-surface)', color: 'var(--img-orange-700, #B8680E)', border: '1px solid var(--img-orange)', fontSize: 13, fontWeight: 600 }}>+ Add SKU</button>
+              <button onClick={() => doExport(null)} title="Download this price book as Excel"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 7, cursor: 'pointer', background: 'var(--bg-surface)', color: 'var(--fg-primary)', border: '1px solid var(--border-default)', fontSize: 13, fontWeight: 600 }}>⬇ Export</button>
+              <button onClick={clearBook} disabled={busy} title="Back up to Excel, then retire every SKU in this book"
+                style={{ padding: '6px 10px', borderRadius: 7, cursor: busy ? 'default' : 'pointer', background: 'var(--bg-surface)', color: 'var(--color-danger)', border: '1px solid var(--border-default)', fontSize: 12.5, fontWeight: 600 }}>Export & clear</button>
+              {/* Upload with a merge/replace mode toggle */}
+              <div style={{ display: 'inline-flex', alignItems: 'stretch', borderRadius: 7, overflow: 'hidden', border: '1px solid var(--img-orange)' }}>
+                <select value={uploadMode} onChange={e => setUploadMode(e.target.value)} title="How an upload treats items not in the sheet"
+                  style={{ height: 32, border: 'none', borderRight: '1px solid var(--img-orange-100)', padding: '0 6px', fontSize: 12, fontWeight: 600, background: 'var(--img-orange-50)', color: 'var(--img-orange-700)', cursor: 'pointer' }}>
+                  <option value="merge">Update &amp; add</option>
+                  <option value="replace">Replace all</option>
+                </select>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '0 12px', cursor: uploading ? 'wait' : 'pointer', background: 'var(--img-orange)', color: '#fff', fontSize: 13, fontWeight: 600 }}>
+                  {uploading ? 'Uploading…' : '⬆ Upload'}
+                  <input type="file" accept=".xlsx,.xls" disabled={uploading}
+                    onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; handleUpload(f); }}
+                    style={{ display: 'none' }} />
+                </label>
+              </div>
             </div>
+
+            {/* Selection action bar — appears when rows are ticked */}
+            {selected.size > 0 && (
+              <div style={{ padding: '8px 24px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--img-orange-50)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--img-orange-700)' }}>{selected.size} selected</span>
+                <span style={{ flex: 1 }}></span>
+                <button onClick={() => doExport(selectedIds())} style={selBtn}>⬇ Export selected</button>
+                <button onClick={() => setBulkOpen(true)} style={selBtn}>✎ Bulk edit</button>
+                <button onClick={() => bulkDeactivate(selectedIds(), { alsoExport: true })} disabled={busy} style={selBtn}>Export &amp; delete</button>
+                <button onClick={() => bulkDeactivate(selectedIds())} disabled={busy} style={{ ...selBtn, color: 'var(--color-danger)', borderColor: 'var(--color-danger)' }}>Delete selected</button>
+                <button onClick={() => setSelected(new Set())} style={{ ...selBtn, border: 'none', background: 'transparent' }}>Clear</button>
+              </div>
+            )}
 
             {/* Pricelist versions strip */}
             {versions.length > 0 && (
@@ -213,13 +295,16 @@ function PricelistApp() {
                 <div style={{
                   display: 'grid',
                   gridTemplateColumns: canSeeCosts
-                    ? '180px 110px 200px 1fr 90px 100px 80px 70px'
-                    : '180px 110px 200px 1fr 100px 70px',
+                    ? '32px 180px 110px 200px 1fr 90px 100px 80px 70px'
+                    : '32px 180px 110px 200px 1fr 100px 70px',
                   gap: 8, padding: '8px 12px', background: 'var(--neutral-25)',
                   fontSize: 10.5, fontWeight: 700, color: 'var(--fg-tertiary)',
                   textTransform: 'uppercase', letterSpacing: '0.04em',
                   borderBottom: '1px solid var(--border-subtle)',
                 }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                    <input type="checkbox" checked={allShownSelected} onChange={toggleSelAll} title="Select all shown" style={{ cursor: 'pointer' }} />
+                  </span>
                   <span>Category</span><span>ERP</span><span>Model</span><span>Description</span>
                   {canSeeCosts && <span style={{ textAlign: 'right' }}>Cost JOD</span>}
                   <span style={{ textAlign: 'right' }}>List price</span>
@@ -233,12 +318,15 @@ function PricelistApp() {
                     <div key={s.id} style={{
                       display: 'grid',
                       gridTemplateColumns: canSeeCosts
-                        ? '180px 110px 200px 1fr 90px 100px 80px 70px'
-                        : '180px 110px 200px 1fr 100px 70px',
+                        ? '32px 180px 110px 200px 1fr 90px 100px 80px 70px'
+                        : '32px 180px 110px 200px 1fr 100px 70px',
                       gap: 8, padding: '8px 12px',
                       borderBottom: '1px solid var(--border-subtle)', alignItems: 'center',
-                      fontSize: 12,
+                      fontSize: 12, background: selected.has(s.id) ? 'var(--img-orange-50)' : 'transparent',
                     }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                        <input type="checkbox" checked={selected.has(s.id)} onChange={() => toggleSel(s.id)} style={{ cursor: 'pointer' }} />
+                      </span>
                       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={[s.category_l2, s.category_l3].filter(Boolean).join(' › ') || s.category}>
                         {s.category_l2 && <span style={{ fontSize: 10, color: 'var(--fg-tertiary)' }}>{s.category_l2} › </span>}
                         <span style={{ color: 'var(--fg-secondary)' }}>{s.category_l3 || s.category}</span>
@@ -306,8 +394,88 @@ function PricelistApp() {
         />
       )}
 
+      {bulkOpen && (
+        <BulkEditModal
+          count={selected.size}
+          groupList={groupList}
+          onClose={() => setBulkOpen(false)}
+          onApply={async (payload) => {
+            setBusy(true);
+            try {
+              const r = await window.api.put('/product-skus/bulk', { ids: selectedIds(), ...payload });
+              fireToast(`Updated ${r.updated} SKU${r.updated === 1 ? '' : 's'}`);
+              setBulkOpen(false); setSelected(new Set()); reload();
+            } catch (e) { fireToast(`Failed: ${e.message}`, { danger: true }); }
+            finally { setBusy(false); }
+          }}
+        />
+      )}
+
       <window.Toast toast={toast} onClose={() => setToast(null)} />
     </>
+  );
+}
+
+// Bulk edit for the selected SKUs. Price change (adjust % OR set exact), plus
+// optional group/family/unit overrides. Only filled fields are applied.
+function BulkEditModal({ count, groupList, onClose, onApply }) {
+  const { ModalShell, Btn, Field, TextInput } = window.PopupShell;
+  const [mode, setMode] = useState('adjust');   // 'adjust' | 'set' | 'none'
+  const [pct, setPct]   = useState('');
+  const [price, setPrice] = useState('');
+  const [l2, setL2]     = useState('');
+  const [l3, setL3]     = useState('');
+  const [unit, setUnit] = useState('');
+
+  const apply = () => {
+    const payload = {};
+    if (mode === 'adjust' && pct !== '' && Number(pct) !== 0) payload.priceAdjustPct = Number(pct);
+    if (mode === 'set' && price !== '') payload.setPrice = Number(price);
+    const patch = {};
+    if (l2.trim()) patch.category_l2 = l2.trim();
+    if (l3.trim()) patch.category_l3 = l3.trim();
+    if (unit.trim()) patch.unit = unit.trim();
+    if (Object.keys(patch).length) payload.patch = patch;
+    onApply(payload);
+  };
+  const priceEmpty = (mode === 'adjust' && (pct === '' || Number(pct) === 0)) || (mode === 'set' && price === '');
+  const canApply = !( (mode === 'none' || priceEmpty) && !l2.trim() && !l3.trim() && !unit.trim() );
+
+  const seg = (val, label) => (
+    <button type="button" onClick={() => setMode(val)} style={{
+      flex: 1, padding: '6px 8px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+      border: '1px solid var(--border-default)',
+      background: mode === val ? 'var(--img-orange)' : 'var(--bg-surface)',
+      color: mode === val ? '#fff' : 'var(--fg-secondary)',
+    }}>{label}</button>
+  );
+
+  return (
+    <ModalShell title={`Bulk edit ${count} SKU${count === 1 ? '' : 's'}`} subtitle="Only the fields you fill are changed." width={440} onClose={onClose}
+      footer={<>
+        <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+        <Btn kind="primary" disabled={!canApply} onClick={apply}>Apply to {count}</Btn>
+      </>}>
+      <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <Field label="List price">
+          <div style={{ display: 'flex', borderRadius: 7, overflow: 'hidden', marginBottom: 8 }}>
+            {seg('adjust', 'Adjust by %')}{seg('set', 'Set to')}{seg('none', 'Leave')}
+          </div>
+          {mode === 'adjust' && <TextInput type="number" value={pct} onChange={e => setPct(e.target.value)} placeholder="e.g. 5 for +5%, -10 for −10%" />}
+          {mode === 'set' && <TextInput type="number" value={price} onChange={e => setPrice(e.target.value)} placeholder="New list price for all selected" />}
+        </Field>
+        <Field label="Group (Layer 2)" hint="Leave blank to keep each SKU's own">
+          <TextInput value={l2} onChange={e => setL2(e.target.value)} list="pl-groups" placeholder="Unchanged" />
+          <datalist id="pl-groups">{(groupList || []).map(g => <option key={g} value={g} />)}</datalist>
+        </Field>
+        <Field label="Family (Layer 3)">
+          <TextInput value={l3} onChange={e => setL3(e.target.value)} placeholder="Unchanged" />
+        </Field>
+        <Field label="Unit">
+          <TextInput value={unit} onChange={e => setUnit(e.target.value)} placeholder="Unchanged (e.g. pc, set, mtr)" />
+        </Field>
+      </div>
+    </ModalShell>
   );
 }
 

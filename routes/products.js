@@ -140,6 +140,89 @@ router.get('/product-skus', (req, res) => {
   res.json(canViewCosts(req.user) ? rows : rows.map(stripCosts));
 });
 
+// ── One SKU row → an export cell object. Column names match the importer's
+// header map so an exported sheet re-imports cleanly. Cost columns only for PMs.
+function skuToRow(s, withCosts) {
+  const row = {
+    'Layer 1': s.category_l1 || '', 'Layer 2': s.category_l2 || '', 'Layer 3': s.category_l3 || s.category || '',
+    'ERP Code': s.erp_code || '', 'Model': s.model || '', 'Description': s.description || '',
+    'Unit': s.unit || 'pc', 'Net Selling': s.list_price,
+  };
+  if (withCosts) Object.assign(row, {
+    'FOB Price': s.fob_price_usd, 'FOB Net Price': s.fob_net_usd, 'USD to JOD': s.fob_net_jod,
+    'Shipping': s.cost_with_shipping, 'Custom Duties': s.cost_with_customs,
+    'Extra Multi': s.cost_with_extra_multi, 'Sales Tax': s.cost_jod,
+  });
+  return row;
+}
+
+// ── GET /api/product-skus/export  — SKUs as .xlsx (no 500 cap; optional ?ids= for selected)
+// Declared before /product-skus/:id so "export" isn't parsed as an id.
+router.get('/product-skus/export', (req, res) => {
+  const { category_l1, category_l2, category_l3, brand, search, price_book_id, ids } = req.query;
+  const clauses = ['active = 1']; const params = [];
+  if (price_book_id) { clauses.push('price_book_id = ?'); params.push(+price_book_id); }
+  if (brand)        { clauses.push('brand = ?');        params.push(brand); }
+  if (category_l1)  { clauses.push('category_l1 = ?');  params.push(category_l1); }
+  if (category_l2)  { clauses.push('category_l2 = ?');  params.push(category_l2); }
+  if (category_l3)  { clauses.push('category_l3 = ?');  params.push(category_l3); }
+  if (search)       { clauses.push('(model LIKE ? OR description LIKE ? OR erp_code LIKE ?)'); params.push(`%${search}%`, `%${search}%`, `%${search}%`); }
+  if (ids) { const list = String(ids).split(',').map(n => +n).filter(Boolean); if (list.length) { clauses.push(`id IN (${list.map(() => '?').join(',')})`); params.push(...list); } }
+  const rows = db.prepare(`SELECT * FROM product_skus WHERE ${clauses.join(' AND ')} ORDER BY category_l2, category_l3, model`).all(...params);
+  const withCosts = canViewCosts(req.user);
+  const ws = XLSX.utils.json_to_sheet(rows.map(s => skuToRow(s, withCosts)));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Pricelist');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="pricelist-${new Date().toISOString().slice(0, 10)}.xlsx"`);
+  res.send(buf);
+});
+
+// ── POST /api/product-skus/bulk-deactivate  { ids:[] }  — soft-retire many at once
+router.post('/product-skus/bulk-deactivate', requirePM, (req, res) => {
+  const ids = Array.isArray(req.body.ids) ? req.body.ids.map(n => +n).filter(Boolean) : [];
+  if (!ids.length) return res.status(400).json({ error: 'No SKUs selected.' });
+  db.exec('BEGIN');
+  try {
+    const upd = db.prepare(`UPDATE product_skus SET active = 0, updated_at = datetime('now') WHERE id = ? AND active = 1`);
+    let n = 0; for (const id of ids) n += upd.run(id).changes;
+    db.exec('COMMIT');
+    res.json({ ok: true, deactivated: n });
+  } catch (e) { db.exec('ROLLBACK'); res.status(500).json({ error: e.message }); }
+});
+
+// ── PUT /api/product-skus/bulk  { ids:[], patch:{category_l2,category_l3,unit}, priceAdjustPct, setPrice }
+// Mass edit. Declared before /product-skus/:id so "bulk" isn't parsed as an id.
+router.put('/product-skus/bulk', requirePM, (req, res) => {
+  const ids = Array.isArray(req.body.ids) ? req.body.ids.map(n => +n).filter(Boolean) : [];
+  if (!ids.length) return res.status(400).json({ error: 'No SKUs selected.' });
+  const { patch = {}, priceAdjustPct, setPrice } = req.body;
+  db.exec('BEGIN');
+  try {
+    let n = 0;
+    for (const id of ids) {
+      const s = db.prepare('SELECT * FROM product_skus WHERE id = ? AND active = 1').get(id);
+      if (!s) continue;
+      const sets = []; const params = [];
+      if (patch.category_l2 != null && patch.category_l2 !== '') { sets.push('category_l2 = ?'); params.push(String(patch.category_l2)); }
+      if (patch.category_l3 != null && patch.category_l3 !== '') { sets.push('category_l3 = ?', 'category = ?'); params.push(String(patch.category_l3), String(patch.category_l3)); }
+      if (patch.unit != null && patch.unit !== '') { sets.push('unit = ?'); params.push(String(patch.unit)); }
+      if (setPrice != null && setPrice !== '') { sets.push('list_price = ?'); params.push(Number(setPrice) || 0); }
+      else if (priceAdjustPct != null && priceAdjustPct !== '' && Number(priceAdjustPct) !== 0) {
+        const factor = 1 + Number(priceAdjustPct) / 100;
+        sets.push('list_price = ?'); params.push(Math.round(s.list_price * factor * 1000) / 1000);
+      }
+      if (!sets.length) continue;
+      sets.push(`updated_at = datetime('now')`); params.push(id);
+      db.prepare(`UPDATE product_skus SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+      n++;
+    }
+    db.exec('COMMIT');
+    res.json({ ok: true, updated: n });
+  } catch (e) { db.exec('ROLLBACK'); res.status(500).json({ error: e.message }); }
+});
+
 // ── GET /api/product-skus/:id/usage
 // Quotations that reference this SKU, so the PM can see what's affected before
 // (or after) retiring it. Active deals are flagged so they stand out.
@@ -199,6 +282,8 @@ router.post('/pricelist-versions/upload', requirePM, upload.single('file'), (req
   if (!book) return res.status(400).json({ error: 'Price book not found.' });
   const brand = book.brand_name;
   const sheetName = (req.body.sheet || null);
+  // 'merge' (default) upserts by model and never removes; 'replace' wipes the book first.
+  const mode = (String(req.body.mode || '').toLowerCase() === 'replace') ? 'replace' : 'merge';
 
   let wb;
   try { wb = XLSX.readFile(req.file.path); }
@@ -259,13 +344,6 @@ router.post('/pricelist-versions/upload', requirePM, upload.single('file'), (req
     );
     const versionId = verInfo.lastInsertRowid;
 
-    // Retire the previous SKUs for THIS book instead of deleting them — deleting
-    // would fail (and lose history) for any SKU referenced by an existing
-    // quotation. Marking them inactive hides them from pickers while the new
-    // pricelist's rows are inserted as active. Old quotations keep their own
-    // snapshot and their link to the retired SKU stays intact.
-    const retired = db.prepare(`UPDATE product_skus SET active = 0, updated_at = datetime('now') WHERE price_book_id = ? AND active = 1`).run(priceBookId).changes;
-
     const insert = db.prepare(`
       INSERT INTO product_skus
         (pricelist_version_id, price_book_id, brand,
@@ -280,8 +358,10 @@ router.post('/pricelist-versions/upload', requirePM, upload.single('file'), (req
     const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
     const cell = (r, idx) => (idx >= 0 ? r[idx] : null);
 
+    // Parse every data row into a plain object first (mode-independent).
     // Category layers use fill-down (a blank cell inherits the value above).
-    let cl1 = null, cl2 = null, cl3 = null, inserted = 0, skipped = 0;
+    let cl1 = null, cl2 = null, cl3 = null, skipped = 0;
+    const parsedRows = [];
     for (let i = headerRowIdx + 1; i < rows.length; i++) {
       const r = rows[i];
       if (!r || r.every(c => c == null || c === '')) continue;
@@ -291,17 +371,47 @@ router.post('/pricelist-versions/upload', requirePM, upload.single('file'), (req
       const model = cell(r, COL.model);
       const listPrice = num(cell(r, COL.list_price));
       if (!model || !listPrice) { skipped++; continue; }
-      const singleCat = cl3 || cl2 || cl1 || '(uncategorized)';  // back-compat label
-      insert.run(
-        versionId, priceBookId, brand,
-        singleCat, cl1 || null, cl2 || null, cl3 || null,
-        cleanCat(cell(r, COL.erp)) || null, cleanCat(model), cell(r, COL.desc) || null,
-        num(cell(r, COL.fob_price_usd)), num(cell(r, COL.fob_net_usd)), num(cell(r, COL.fob_net_jod)),
-        num(cell(r, COL.cost_with_shipping)), num(cell(r, COL.cost_with_customs)),
-        num(cell(r, COL.cost_with_extra_multi)), num(cell(r, COL.cost_jod)),
-        listPrice
-      );
-      inserted++;
+      parsedRows.push({
+        cat: cl3 || cl2 || cl1 || '(uncategorized)', cl1: cl1 || null, cl2: cl2 || null, cl3: cl3 || null,
+        erp: cleanCat(cell(r, COL.erp)) || null, model: cleanCat(model), desc: cell(r, COL.desc) || null,
+        fob_price_usd: num(cell(r, COL.fob_price_usd)), fob_net_usd: num(cell(r, COL.fob_net_usd)),
+        fob_net_jod: num(cell(r, COL.fob_net_jod)), cost_with_shipping: num(cell(r, COL.cost_with_shipping)),
+        cost_with_customs: num(cell(r, COL.cost_with_customs)), cost_with_extra_multi: num(cell(r, COL.cost_with_extra_multi)),
+        cost_jod: num(cell(r, COL.cost_jod)), list_price: listPrice,
+      });
+    }
+
+    let inserted = 0, updated = 0, retired = 0;
+    if (mode === 'replace') {
+      // Replace = retire everything in the book (soft), then insert the sheet.
+      retired = db.prepare(`UPDATE product_skus SET active = 0, updated_at = datetime('now') WHERE price_book_id = ? AND active = 1`).run(priceBookId).changes;
+      for (const p of parsedRows) {
+        insert.run(versionId, priceBookId, brand, p.cat, p.cl1, p.cl2, p.cl3, p.erp, p.model, p.desc,
+          p.fob_price_usd, p.fob_net_usd, p.fob_net_jod, p.cost_with_shipping, p.cost_with_customs,
+          p.cost_with_extra_multi, p.cost_jod, p.list_price);
+        inserted++;
+      }
+    } else {
+      // Merge = upsert by model. Update matching active SKUs, insert new ones,
+      // leave everything else untouched (nothing retired).
+      // Match trim/case-insensitively so legacy rows with stray leading/trailing
+      // spaces in `model` still upsert instead of spawning a near-duplicate.
+      const findActive = db.prepare(`SELECT id FROM product_skus WHERE price_book_id = ? AND active = 1 AND lower(trim(model)) = lower(trim(?)) LIMIT 1`);
+      const updateStmt = db.prepare(`UPDATE product_skus SET pricelist_version_id=?, category=?, category_l1=?, category_l2=?, category_l3=?, erp_code=?, description=?, fob_price_usd=?, fob_net_usd=?, fob_net_jod=?, cost_with_shipping=?, cost_with_customs=?, cost_with_extra_multi=?, cost_jod=?, list_price=?, updated_at=datetime('now') WHERE id=?`);
+      for (const p of parsedRows) {
+        const ex = findActive.get(priceBookId, p.model);
+        if (ex) {
+          updateStmt.run(versionId, p.cat, p.cl1, p.cl2, p.cl3, p.erp, p.desc,
+            p.fob_price_usd, p.fob_net_usd, p.fob_net_jod, p.cost_with_shipping, p.cost_with_customs,
+            p.cost_with_extra_multi, p.cost_jod, p.list_price, ex.id);
+          updated++;
+        } else {
+          insert.run(versionId, priceBookId, brand, p.cat, p.cl1, p.cl2, p.cl3, p.erp, p.model, p.desc,
+            p.fob_price_usd, p.fob_net_usd, p.fob_net_jod, p.cost_with_shipping, p.cost_with_customs,
+            p.cost_with_extra_multi, p.cost_jod, p.list_price);
+          inserted++;
+        }
+      }
     }
     // How many of the just-retired SKUs are still referenced by quotations on
     // active (open) deals — so the PM knows what's affected.
@@ -316,7 +426,7 @@ router.post('/pricelist-versions/upload', requirePM, upload.single('file'), (req
     `).get(priceBookId).n;
 
     db.exec('COMMIT');
-    res.status(201).json({ ok: true, version_id: versionId, price_book_id: priceBookId, inserted, skipped, retired, retired_on_active_quotes: retiredOnActiveQuotes, sheet, brand, globals });
+    res.status(201).json({ ok: true, version_id: versionId, price_book_id: priceBookId, mode, inserted, updated, skipped, retired, retired_on_active_quotes: retiredOnActiveQuotes, sheet, brand, globals });
   } catch (e) {
     db.exec('ROLLBACK');
     res.status(500).json({ error: e.message });

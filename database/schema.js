@@ -693,6 +693,23 @@ module.exports = function applySchema(db) {
   const insertArea = db.prepare(`INSERT OR IGNORE INTO areas (name) VALUES (?)`);
   for (const a of seedAreas) insertArea.run(a);
 
+  // ── Bulk import batches ──────────────────────────────────────────────────
+  // One row per committed pipeline Excel import, so a whole import can be undone
+  // in one click. created_org_ids / created_contact_ids are JSON arrays of the
+  // ids this import created (removed on undo only if nothing else references them).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS import_batches (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      uploaded_by         INTEGER REFERENCES users(id),
+      filename            TEXT,
+      opp_count           INTEGER DEFAULT 0,
+      created_org_ids     TEXT DEFAULT '[]',
+      created_contact_ids TEXT DEFAULT '[]',
+      created_at          TEXT DEFAULT (datetime('now'))
+    );
+  `);
+  addColumnIfMissing('opportunities', 'import_batch_id', `INTEGER REFERENCES import_batches(id)`);
+
   // ── Indexes ────────────────────────────────────────────────────────────────
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_opps_salesman    ON opportunities(salesman_id);

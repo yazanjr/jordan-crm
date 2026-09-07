@@ -366,6 +366,17 @@ function QuotationEditor() {
         <div className="t-num" style={{ fontSize: 22, fontWeight: 800, color: 'var(--fg-primary)' }}>
           {window.formatJOD ? window.formatJOD(totalValue) : `JOD ${totalValue.toFixed(2)}`}
         </div>
+        {(() => {
+          const savedId = (parentQuote && parentQuote.id) || (request && request.latest_quotation && request.latest_quotation.id);
+          if (!savedId) return null;
+          return (
+            <button onClick={() => window.downloadBlob(`/api/quotation-versions/${savedId}/export.doc`, `${header.reference || 'quotation'}.doc`).catch(err => setError(err.message || 'Download failed'))}
+              title="Download the saved quotation as a Word file"
+              style={{ padding: '10px 16px', borderRadius: 8, border: '1px solid var(--border-default)', background: 'var(--bg-surface)', color: 'var(--fg-primary)', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
+              ⬇ Word
+            </button>
+          );
+        })()}
         <button onClick={submit} disabled={!canSubmit || submitting} style={{
           padding: '10px 22px', borderRadius: 8, border: 'none',
           background: canSubmit && !submitting ? 'var(--img-orange)' : 'var(--neutral-200)',

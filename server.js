@@ -55,6 +55,15 @@ app.get('/reports', (_req, res) => {
   res.redirect('/pipeline/Reports.html');
 });
 
+// ── Unmatched API routes → clean JSON 404 (NEVER the SPA login page) ─────────
+// Without this, an unknown/removed /api/* route falls through to the SPA
+// catch-all below and returns index.html (the login page) with status 200.
+// A file download (e.g. the quotation .doc) would then silently save the login
+// page instead of failing — which is impossible to diagnose. Fail loudly here.
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: `No such API route: ${req.method} ${req.originalUrl}. The server may be running an older build — restart it.` });
+});
+
 // ── Catch-all: SPA ───────────────────────────────────────────────────────────
 app.get('/app*', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'app.html'));

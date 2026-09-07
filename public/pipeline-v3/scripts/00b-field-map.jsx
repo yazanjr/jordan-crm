@@ -23,6 +23,7 @@
     { key: 'personResponsible', api: 'person_responsible', label: 'Person Responsible',             type: 'text',     editable: true  },
     { key: 'remarks',           api: 'remarks',            label: 'Remarks',                        type: 'textarea', editable: true  },
     { key: 'district',          api: 'district',           label: 'Project Location',               type: 'text',     editable: true  },
+    { key: 'locationUrl',       api: 'location_url',       label: 'Map link',                       type: 'text',     editable: true  },
     { key: 'status',            api: 'status',             label: 'Status',                         type: 'select',   editable: true,
       options: ['Active', 'Won', 'Lost', 'On-Hold', 'De-Prioritized'] },
     { key: 'stage',             api: 'stage',              label: 'Stage',                          type: 'stage',    editable: false },

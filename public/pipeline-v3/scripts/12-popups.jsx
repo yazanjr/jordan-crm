@@ -499,6 +499,46 @@ function AreaCombobox({ value, onChange, onPick, onClose, placeholder = 'Search 
   );
 }
 
+// ---- Google Maps helpers (link-out, no API key needed) ----
+// Build a Google Maps search URL for a free-text place query.
+function gmapsSearchUrl(query) {
+  return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(String(query || '').trim());
+}
+// Cheap "does this look like a pasteable link?" check.
+function isLikelyUrl(s) {
+  return /^https?:\/\/\S+/i.test(String(s || '').trim());
+}
+
+// "Google Maps ↗" button — opens a Maps search for `query` in a new tab.
+// Reused by the New Deal form and the deal-detail drawer.
+function GoogleMapsButton({ query, label = 'Google Maps' }) {
+  const { MapPin } = window.Icons;
+  const q = String(query || '').trim();
+  const disabled = q.length === 0;
+  return (
+    <button type="button"
+      disabled={disabled}
+      title={disabled ? 'Type a location first' : `Search "${q}" on Google Maps`}
+      onClick={() => { if (!disabled) window.open(gmapsSearchUrl(q), '_blank', 'noopener,noreferrer'); }}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap',
+        padding: '0 12px', height: 34, borderRadius: 7, flexShrink: 0,
+        border: '1px solid var(--border-default)',
+        background: disabled ? 'var(--bg-sunken)' : 'var(--bg-surface)',
+        color: disabled ? 'var(--fg-disabled)' : 'var(--fg-primary)',
+        fontSize: 12.5, fontWeight: 600, cursor: disabled ? 'not-allowed' : 'pointer',
+      }}
+      onMouseEnter={e => { if (!disabled) e.currentTarget.style.background = 'var(--bg-hover)'; }}
+      onMouseLeave={e => { if (!disabled) e.currentTarget.style.background = 'var(--bg-surface)'; }}>
+      <MapPin size={14} style={{ color: disabled ? 'var(--fg-disabled)' : 'var(--img-orange)' }} />
+      {label} ↗
+    </button>
+  );
+}
+
+window.gmapsSearchUrl = gmapsSearchUrl;
+window.isLikelyUrl = isLikelyUrl;
+window.GoogleMapsButton = GoogleMapsButton;
 window.ContactCombobox = ContactCombobox;
 window.AccountCombobox = AccountCombobox;
 window.AreaCombobox = AreaCombobox;
@@ -514,7 +554,7 @@ function NewDealModal({ onClose, onSubmit }) {
   const [data, setData] = React.useState({
     name: '', account: '', orgId: null, value: '', stage: 'prospect',
     owner: defaultOwner, scope: defaultScope, closeDate: '', probability: window.STAGE_PROBABILITY?.prospect ?? 10,
-    closeQuarter: '', district: '',
+    closeQuarter: '', district: '', location_url: '',
     contactId: null, contactName: '', contactRole: '', contactEmail: '', contactPhone: '',
     customFields: [], // [{id, label, type, value}]
   });
@@ -649,11 +689,29 @@ function NewDealModal({ onClose, onSubmit }) {
           </Field>
           <Field label="Project location"
             hint={(window.AREAS || []).includes(data.district) ? 'Existing area' : (data.district.trim().length >= 2 ? 'New area — will be created on save' : 'Type to search areas, or add a new one')}>
-            <window.AreaCombobox
-              value={data.district}
-              onChange={(v) => set('district', v)}
-              onPick={(name) => set('district', name)}
-            />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <window.AreaCombobox
+                  value={data.district}
+                  onChange={(v) => set('district', v)}
+                  onPick={(name) => set('district', name)}
+                />
+              </div>
+              <GoogleMapsButton query={data.district} />
+            </div>
+          </Field>
+          <Field label="Map link"
+            hint='Optional — search on Google Maps above, then paste the location’s link here so the exact spot is one click away on the deal.'>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <TextInput value={data.location_url} onChange={e => set('location_url', e.target.value)}
+                placeholder="https://maps.app.goo.gl/…" style={{ flex: 1 }} />
+              {isLikelyUrl(data.location_url) && (
+                <a href={data.location_url.trim()} target="_blank" rel="noopener noreferrer"
+                  style={{ fontSize: 12, fontWeight: 600, color: 'var(--img-orange-700)', whiteSpace: 'nowrap', textDecoration: 'none' }}>
+                  Open ↗
+                </a>
+              )}
+            </div>
           </Field>
         </>}
 
@@ -822,57 +880,163 @@ window.NewDealModal = NewDealModal;
 // ============================================================
 // 2) IMPORT CSV MODAL
 // ============================================================
-function ImportModal({ onClose, onImport }) {
-  const [drag, setDrag] = React.useState(false);
-  const [file, setFile] = React.useState(null);
-  const { Import: ImportIcon, File: FileIcon, Check } = window.Icons;
+// Real bulk-import: pick .xlsx → PREVIEW (validate, nothing written) → CONFIRM
+// (writes) → RESULT with one-click Undo. A "Recent imports" list lets any past
+// batch be undone too. Uses the real /api/opportunities/import* endpoints.
+function ImportModal({ onClose, onImported }) {
+  const { Import: ImportIcon, File: FileIcon, Check, Download, Close } = window.Icons;
+  const [drag, setDrag]     = React.useState(false);
+  const [file, setFile]     = React.useState(null);
+  const [phase, setPhase]   = React.useState('pick');   // pick | preview | result
+  const [report, setReport] = React.useState(null);
+  const [result, setResult] = React.useState(null);
+  const [busy, setBusy]     = React.useState(false);
+  const [err, setErr]       = React.useState(null);
+  const [batches, setBatches] = React.useState([]);
+  const inputRef = React.useRef(null);
+
+  const loadBatches = () => window.api.get('/opportunities/import-batches').then(setBatches).catch(() => {});
+  React.useEffect(() => { loadBatches(); }, []);
+
+  const runPreview = async (f) => {
+    setBusy(true); setErr(null);
+    try {
+      const fd = new FormData(); fd.append('file', f); fd.append('commit', 'false');
+      const rep = await window.uploadForm('/api/opportunities/import', fd);
+      setReport(rep); setPhase('preview');
+    } catch (e) { setErr(e.message || 'Could not read the file.'); setFile(null); }
+    finally { setBusy(false); }
+  };
+  const pick = (f) => { if (!f) return; setFile(f); runPreview(f); };
+
+  const confirmImport = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const fd = new FormData(); fd.append('file', file); fd.append('commit', 'true');
+      const res = await window.uploadForm('/api/opportunities/import', fd);
+      setResult(res); setPhase('result'); onImported?.(res); loadBatches();
+    } catch (e) { setErr(e.message || 'Import failed.'); }
+    finally { setBusy(false); }
+  };
+
+  const undo = async (batchId) => {
+    setBusy(true); setErr(null);
+    try {
+      await window.api.post(`/opportunities/import-batches/${batchId}/undo`, {});
+      onImported?.({ undone: true }); loadBatches();
+      if (result && result.batch_id === batchId) setResult({ ...result, _undone: true });
+    } catch (e) { setErr(e.message || 'Undo failed.'); }
+    finally { setBusy(false); }
+  };
+
+  const downloadTemplate = () =>
+    window.downloadBlob('/api/opportunities/import-template', 'pipeline-import-template.xlsx').catch(e => setErr(e.message));
+
+  const footer = phase === 'preview' ? <>
+      <Btn kind="ghost" onClick={() => { setFile(null); setReport(null); setPhase('pick'); }}>Back</Btn>
+      <Btn kind="primary" disabled={busy || !report || report.valid === 0} onClick={confirmImport}>
+        {busy ? 'Importing…' : `Confirm import (${report ? report.valid : 0})`}
+      </Btn>
+    </> : phase === 'result' ? <>
+      <Btn kind="primary" onClick={onClose}>Done</Btn>
+    </> : <Btn kind="ghost" onClick={onClose}>Close</Btn>;
+
+  const statPill = (label, n, tone) => (
+    <div style={{ flex: 1, textAlign: 'center', padding: '10px 6px', borderRadius: 8, background: 'var(--neutral-25)', border: '1px solid var(--border-subtle)' }}>
+      <div className="t-num" style={{ fontSize: 20, fontWeight: 700, color: tone || 'var(--fg-primary)' }}>{n}</div>
+      <div style={{ fontSize: 11, color: 'var(--fg-secondary)' }}>{label}</div>
+    </div>
+  );
+
   return (
     <ModalShell
-      title="Import deals"
-      subtitle="Upload a CSV to add deals in bulk"
-      onClose={onClose}
-      width={520}
-      footer={<>
-        <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-        <Btn kind="primary" disabled={!file} onClick={() => onImport?.(file)}>Import {file ? `(${file.rows} rows)` : ''}</Btn>
-      </>}
-    >
+      title="Import deals from Excel"
+      subtitle="Upload a spreadsheet to add many deals at once — you'll preview before anything is saved."
+      onClose={onClose} width={560} footer={footer}>
       <div style={{ padding: 20 }}>
-        <div
-          onDragOver={e => { e.preventDefault(); setDrag(true); }}
-          onDragLeave={() => setDrag(false)}
-          onDrop={e => { e.preventDefault(); setDrag(false); setFile({ name: 'deals-q3-2026.csv', rows: 47, size: '12.4 KB' }); }}
-          style={{
-            border: `2px dashed ${drag ? 'var(--img-orange)' : 'var(--border-default)'}`,
-            background: drag ? 'var(--img-orange-50)' : 'var(--neutral-25)',
-            borderRadius: 12, padding: 32, textAlign: 'center',
-            transition: 'border 120ms, background 120ms',
-          }}
-        >
-          {!file ? <>
-            <div style={{ width: 44, height: 44, margin: '0 auto 10px', borderRadius: 10, background: 'var(--img-orange-100)', color: 'var(--img-orange-700)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
-              <ImportIcon size={20} />
-            </div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg-primary)' }}>Drag &amp; drop your CSV here</div>
-            <div style={{ fontSize: 12, color: 'var(--fg-secondary)', marginTop: 4 }}>or click to browse — max 5MB</div>
-            <Btn kind="secondary" size="sm" onClick={() => setFile({ name: 'deals-q3-2026.csv', rows: 47, size: '12.4 KB' })}>Browse files</Btn>
-          </> : <>
-            <div style={{ width: 44, height: 44, margin: '0 auto 10px', borderRadius: 10, background: 'var(--color-success-bg)', color: 'var(--img-green-700)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Check size={22} />
-            </div>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>{file.name}</div>
-            <div style={{ fontSize: 12, color: 'var(--fg-secondary)', marginTop: 4 }}>{file.rows} rows · {file.size}</div>
-            <button onClick={() => setFile(null)} style={{ marginTop: 10, background: 'transparent', border: 'none', color: 'var(--img-orange-700)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Replace file</button>
-          </>}
-        </div>
+        {err && <div style={{ marginBottom: 14, padding: '10px 12px', borderRadius: 8, background: 'var(--color-danger-bg)', color: 'var(--color-danger)', fontSize: 12.5 }}>{err}</div>}
 
-        <div style={{ marginTop: 16, padding: 12, background: 'var(--neutral-50)', borderRadius: 8, fontSize: 12, color: 'var(--fg-secondary)', display: 'flex', gap: 10 }}>
-          <FileIcon size={14} style={{ marginTop: 2, flexShrink: 0 }} />
-          <div>
-            Required columns: <span className="t-mono" style={{ color: 'var(--fg-primary)' }}>name, account, value, stage, owner</span>.
-            <a href="#" style={{ color: 'var(--img-orange-700)', fontWeight: 600, marginLeft: 4 }}>Download template</a>
+        {/* PICK */}
+        {phase === 'pick' && <>
+          <input ref={inputRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }}
+            onChange={e => pick(e.target.files && e.target.files[0])} />
+          <div
+            onDragOver={e => { e.preventDefault(); setDrag(true); }}
+            onDragLeave={() => setDrag(false)}
+            onDrop={e => { e.preventDefault(); setDrag(false); pick(e.dataTransfer.files && e.dataTransfer.files[0]); }}
+            onClick={() => inputRef.current && inputRef.current.click()}
+            style={{
+              border: `2px dashed ${drag ? 'var(--img-orange)' : 'var(--border-default)'}`,
+              background: drag ? 'var(--img-orange-50)' : 'var(--neutral-25)',
+              borderRadius: 12, padding: 30, textAlign: 'center', cursor: 'pointer',
+            }}>
+            <div style={{ width: 44, height: 44, margin: '0 auto 10px', borderRadius: 10, background: 'var(--img-orange-100)', color: 'var(--img-orange-700)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+              {busy ? <span style={{ fontSize: 12, fontWeight: 700 }}>…</span> : <ImportIcon size={20} />}
+            </div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg-primary)' }}>{busy ? 'Reading file…' : 'Drag & drop your Excel file, or click to browse'}</div>
+            <div style={{ fontSize: 12, color: 'var(--fg-secondary)', marginTop: 4 }}>.xlsx or .xls · up to 20 MB</div>
           </div>
-        </div>
+          <div style={{ marginTop: 14, padding: 12, background: 'var(--neutral-50)', borderRadius: 8, fontSize: 12, color: 'var(--fg-secondary)', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <FileIcon size={14} style={{ flexShrink: 0 }} />
+            <div style={{ flex: 1 }}>New to this? Start from the template so your columns match.</div>
+            <button onClick={downloadTemplate} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'transparent', border: 'none', color: 'var(--img-orange-700)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}>
+              <Download size={13} /> Template
+            </button>
+          </div>
+
+          {batches.length > 0 && <div style={{ marginTop: 18 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--fg-tertiary)', marginBottom: 8 }}>Recent imports</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {batches.map(b => (
+                <div key={b.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', border: '1px solid var(--border-subtle)', borderRadius: 8 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--fg-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.filename}</div>
+                    <div style={{ fontSize: 11, color: 'var(--fg-tertiary)' }}>{b.opp_count} deals · {b.uploaded_by_name || '—'}</div>
+                  </div>
+                  <button disabled={busy} onClick={() => undo(b.id)} style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-danger)', background: 'transparent', border: '1px solid var(--border-subtle)', borderRadius: 6, padding: '5px 10px', cursor: busy ? 'default' : 'pointer' }}>Undo</button>
+                </div>
+              ))}
+            </div>
+          </div>}
+        </>}
+
+        {/* PREVIEW */}
+        {phase === 'preview' && report && <>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+            {statPill('Ready to import', report.valid, 'var(--color-success)')}
+            {statPill('Rows with errors', report.skipped, report.skipped ? 'var(--color-danger)' : 'var(--fg-primary)')}
+            {statPill('New customers', report.new_customers)}
+          </div>
+          <div style={{ fontSize: 12.5, color: 'var(--fg-secondary)', marginBottom: report.errors && report.errors.length ? 12 : 0 }}>
+            Nothing is saved yet. <b>{report.valid}</b> deal{report.valid === 1 ? '' : 's'} will be created
+            {report.new_customers ? <> (plus <b>{report.new_customers}</b> new customer{report.new_customers === 1 ? '' : 's'})</> : null}. Press <b>Confirm</b> to go ahead.
+          </div>
+          {report.errors && report.errors.length > 0 && <div style={{ maxHeight: 180, overflowY: 'auto', border: '1px solid var(--border-subtle)', borderRadius: 8 }}>
+            {report.errors.map((e, i) => (
+              <div key={i} style={{ display: 'flex', gap: 8, padding: '7px 10px', borderTop: i ? '1px solid var(--border-subtle)' : 'none', fontSize: 12 }}>
+                <span style={{ color: 'var(--fg-tertiary)', flexShrink: 0 }}>Row {e.row}</span>
+                <span style={{ flex: 1, color: 'var(--fg-primary)' }}>{e.deal}</span>
+                <span style={{ color: 'var(--color-danger)', textAlign: 'right' }}>{e.reason}</span>
+              </div>
+            ))}
+          </div>}
+        </>}
+
+        {/* RESULT */}
+        {phase === 'result' && result && <div style={{ textAlign: 'center', padding: '8px 0' }}>
+          <div style={{ width: 52, height: 52, margin: '0 auto 12px', borderRadius: '50%', background: result._undone ? 'var(--bg-sunken)' : 'var(--color-success-bg)', color: result._undone ? 'var(--fg-tertiary)' : 'var(--img-green-700)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+            {result._undone ? <Close size={24} /> : <Check size={26} />}
+          </div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--fg-primary)' }}>
+            {result._undone ? 'Import undone' : `Imported ${result.created} deal${result.created === 1 ? '' : 's'}`}
+          </div>
+          <div style={{ fontSize: 12.5, color: 'var(--fg-secondary)', marginTop: 6, maxWidth: 380, marginLeft: 'auto', marginRight: 'auto' }}>
+            {result._undone
+              ? 'Those deals and the new customers/contacts they created were removed.'
+              : <>Added {result.created} deal{result.created === 1 ? '' : 's'}{result.new_customers ? ` and ${result.new_customers} new customer${result.new_customers === 1 ? '' : 's'}` : ''}{result.skipped ? ` · ${result.skipped} row${result.skipped === 1 ? '' : 's'} skipped` : ''}. Not what you expected? Undo removes exactly this import.</>}
+          </div>
+          {!result._undone && <button disabled={busy} onClick={() => undo(result.batch_id)} style={{ marginTop: 14, fontSize: 13, fontWeight: 600, color: 'var(--color-danger)', background: 'transparent', border: '1px solid var(--border-default)', borderRadius: 7, padding: '7px 16px', cursor: busy ? 'default' : 'pointer' }}>Undo this import</button>}
+        </div>}
       </div>
     </ModalShell>
   );
@@ -1149,9 +1313,9 @@ function ApplyDiscountModal({ deal, onClose, onSubmit }) {
   const [notes, setNotes] = React.useState('');
   const [limit, setLimit] = React.useState(30);
   React.useEffect(() => {
-    window.api.get('/settings').then(rows => {
-      const s = (Array.isArray(rows) ? rows : []).find(x => x.key === 'discount_limit');
-      if (s) setLimit(Number(s.value) || 30);
+    // GET /api/settings returns a keyed object ({ discount_limit: '30', … }), not rows.
+    window.api.get('/settings').then(s => {
+      if (s && s.discount_limit != null) setLimit(Number(s.discount_limit) || 30);
     }).catch(() => {});
   }, []);
   const n = Number(pct) || 0;

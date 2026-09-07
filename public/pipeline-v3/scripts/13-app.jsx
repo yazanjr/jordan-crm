@@ -53,6 +53,7 @@ function adaptOppFromApi(row) {
     segment:      row.segment    || null,
     source:       row.source     || null,
     district:     row.district   || null,
+    locationUrl:  row.location_url || null,
     engOffice:    row.eng_office || null,
     contractor:   row.contractor || null,
     discount:     row.discount_pct || 0,
@@ -566,6 +567,11 @@ function PipelineApp() {
           <Check size={14} /> Approvals
         </button>
       )}
+      <button style={tbBtn}
+        onClick={() => window.downloadBlob('/api/opportunities/export', `pipeline-${new Date().toISOString().slice(0,10)}.xlsx`).catch(err => fireToast(err.message || 'Export failed'))}
+        onMouseEnter={e => e.currentTarget.style.background='var(--bg-hover)'} onMouseLeave={e => e.currentTarget.style.background='transparent'}>
+        {React.createElement(window.Icons.Download, { size: 14 })} Export
+      </button>
       {modules.showImport && <button style={tbBtn} onClick={() => openModal('import')} onMouseEnter={e => e.currentTarget.style.background='var(--bg-hover)'} onMouseLeave={e => e.currentTarget.style.background='transparent'}><Import size={14} /> Import</button>}
       <button style={tbBtn} title="More options" onClick={e => openPop('toolbarmore', e.currentTarget.getBoundingClientRect())}
         onMouseEnter={e => e.currentTarget.style.background='var(--bg-hover)'} onMouseLeave={e => e.currentTarget.style.background='transparent'}>
@@ -601,6 +607,7 @@ function PipelineApp() {
           if (id === 'my-tasks')     { window.location.href = 'MyTasks.html'; return; }
           if (id === 'pricelist')    { window.location.href = 'Pricelist.html'; return; }
           if (id === 'costing')      { window.location.href = 'QuotationCosting.html'; return; }
+          if (id === 'settings')     { window.location.href = 'Settings.html'; return; }
           setActiveNav(id);
         }}
         onUserMenu={(rect) => openPop('user', rect)}
@@ -759,6 +766,7 @@ function PipelineApp() {
                 salesman_id: ownerUser ? ownerUser.dbId : undefined,
                 product_group: (Array.isArray(data.scope) && data.scope.length) ? JSON.stringify(data.scope) : null,
                 district: area || null,
+                location_url: (data.location_url || '').trim() || null,
                 close_date: data.closeDate || null,
                 contact_id: contact_id || null,
                 org_id: org_id || null,
@@ -871,7 +879,13 @@ function PipelineApp() {
         />
       )}
       {modal?.kind === 'import' && (
-        <window.ImportModal onClose={closeModal} onImport={(f) => { closeModal(); fireToast(`Importing ${f.rows} deals…`); }} />
+        <window.ImportModal onClose={closeModal}
+          onImported={async (res) => {
+            const rows = await window.api.get('/opportunities').catch(() => null);
+            if (Array.isArray(rows)) setDeals(rows.map(adaptOppFromApi));
+            if (res && res.undone) fireToast('Import undone');
+            else if (res && res.created != null) fireToast(`Imported ${res.created} deal${res.created === 1 ? '' : 's'}`);
+          }} />
       )}
       {modal?.kind === 'automate' && (
         <window.AutomationModal onClose={closeModal} onCreate={() => { closeModal(); fireToast('Automation created'); }} />

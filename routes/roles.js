@@ -21,10 +21,18 @@ router.put('/:id/permissions', requirePerm('roles.manage'), (req, res) => {
   const { permissionIds } = req.body; // array of permission ids
   const roleId = Number(req.params.id);
 
-  db.prepare('DELETE FROM role_permissions WHERE role_id = ?').run(roleId);
-  const insert = db.prepare('INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)');
-  const insertMany = db.transaction(ids => ids.forEach(pid => insert.run(roleId, pid)));
-  insertMany(permissionIds || []);
+  // node:sqlite (DatabaseSync) has no .transaction() helper — use exec BEGIN/COMMIT,
+  // matching the pattern used across the other routes.
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM role_permissions WHERE role_id = ?').run(roleId);
+    const insert = db.prepare('INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)');
+    (permissionIds || []).forEach(pid => insert.run(roleId, Number(pid)));
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
 
   clearPermCache(); // clear all since we don't know who is using this role
   res.json({ success: true });

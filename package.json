@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node --no-warnings=ExperimentalWarning server.js",
     "dev": "nodemon --legacy-watch --exec \"node --no-warnings=ExperimentalWarning\" server.js",
-    "seed": "node --no-warnings=ExperimentalWarning database/seed.js"
+    "seed": "node --no-warnings=ExperimentalWarning database/seed.js",
+    "backup": "node --no-warnings=ExperimentalWarning scripts/backup-db.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

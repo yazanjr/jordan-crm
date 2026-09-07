@@ -2,6 +2,7 @@ const express = require('express');
 const multer  = require('multer');
 const path    = require('path');
 const fs      = require('fs');
+const XLSX    = require('xlsx');
 const db      = require('../database/db');
 const authMw  = require('../middleware/auth');
 const demoAuth = require('../middleware/demoAuth');
@@ -168,6 +169,268 @@ function enrichOpp(opp) {
   // `history` kept for any legacy consumers; `events` is the new unified feed.
   return { ...opp, labels, history: stageHistory, events, contacts };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EXCEL EXPORT / BULK IMPORT (available to every signed-in user)
+// Import is reversible: preview-before-commit + one-click Undo of a batch.
+// These MUST be declared before GET /:id so "/export" isn't parsed as an id.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Header names the importer understands (also the template's header row).
+const IMPORT_HEADERS = ['Deal name', 'Account/Customer', 'Contact name', 'Contact email',
+  'Contact phone', 'Salesman', 'Product groups', 'Segment', 'Project location', 'Map link',
+  'Expected close date', 'Stage', 'Notes'];
+
+const _norm = s => String(s == null ? '' : s).trim().toLowerCase().replace(/\s+/g, ' ');
+
+// Read a cell from a sheet-row object by any of several header aliases.
+function _cell(rowObj, ...aliases) {
+  const want = aliases.map(_norm);
+  for (const k of Object.keys(rowObj)) {
+    if (want.includes(_norm(k))) { const v = rowObj[k]; return v == null ? '' : String(v).trim(); }
+  }
+  return '';
+}
+
+// Shared deal-list query (respects role scoping + the same filters as GET /).
+function queryDeals(req) {
+  const canViewAll = db.prepare(`SELECT 1 FROM permissions p JOIN role_permissions rp ON rp.permission_id = p.id WHERE rp.role_id = ? AND p.key = 'opps.view_all'`).get(req.user.role_id);
+  const { stage, status, salesman_id, search } = req.query;
+  let sql = `SELECT o.*, c.name AS contact_name, org.name AS org_name, s.name AS salesman_name
+    FROM opportunities o
+    LEFT JOIN contacts c ON c.id = o.contact_id
+    LEFT JOIN organizations org ON org.id = o.org_id
+    LEFT JOIN users s ON s.id = o.salesman_id WHERE 1=1`;
+  const params = [];
+  if (!canViewAll) { sql += ` AND o.salesman_id = ?`; params.push(req.user.id); }
+  if (stage)       { sql += ` AND o.stage = ?`;       params.push(stage); }
+  if (status)      { sql += ` AND o.status = ?`;      params.push(status); }
+  if (salesman_id) { sql += ` AND o.salesman_id = ?`; params.push(salesman_id); }
+  if (search)      { sql += ` AND o.title LIKE ?`;    params.push(`%${search}%`); }
+  sql += ` ORDER BY o.updated_at DESC`;
+  return db.prepare(sql).all(...params);
+}
+
+function dealToExportRow(o) {
+  let groups = o.product_group || '';
+  try { const p = JSON.parse(o.product_group); if (Array.isArray(p)) groups = p.join(', '); } catch {}
+  return {
+    'Deal name': o.title || '', 'Account/Customer': o.org_name || '', 'Contact name': o.contact_name || '',
+    'Salesman': o.salesman_name || '', 'Stage': o.stage || '', 'Status': o.status || '',
+    'Value': o.expected_value || 0, 'Currency': o.currency || '', 'Product groups': groups,
+    'Segment': o.segment || '', 'System': o.system || '', 'Sub-System': o.sub_system || '',
+    'Brand': o.brand || '', 'Project location': o.district || '', 'Map link': o.location_url || '',
+    'Consultant': o.eng_office || '', 'Contractor': o.contractor || '',
+    'Expected closing': o.expected_closing || o.close_date || '', 'Next action': o.next_action || '',
+    'Remarks': o.remarks || '', 'Created': o.created_at || '',
+  };
+}
+
+function sendWorkbook(res, wb, filename) {
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(buf);
+}
+
+// GET /api/opportunities/export — current (filtered, role-scoped) pipeline as .xlsx
+router.get('/export', (req, res) => {
+  const rows = queryDeals(req);
+  const ws = XLSX.utils.json_to_sheet(rows.map(dealToExportRow));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Pipeline');
+  sendWorkbook(res, wb, `pipeline-${new Date().toISOString().slice(0, 10)}.xlsx`);
+});
+
+// GET /api/opportunities/import-template — blank sheet with the expected headers
+router.get('/import-template', (req, res) => {
+  const example = ['Example — Marka Tower VRF', 'Marka Real Estate Co.', 'Mr. Sample Client',
+    'client@example.com', '07 9000 0000', '', 'VRF, Ducted', 'Commercial', 'Amman', '',
+    '2026-12-31', 'Prospect', 'Optional notes — delete this example row'];
+  const ws = XLSX.utils.aoa_to_sheet([IMPORT_HEADERS, example]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Deals');
+  sendWorkbook(res, wb, 'pipeline-import-template.xlsx');
+});
+
+const importUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+
+// POST /api/opportunities/import  (form: file, commit)  — preview when commit!=true.
+router.post('/import', importUpload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded (form field "file").' });
+  const commit = String(req.body.commit) === 'true' || req.body.commit === true;
+
+  let wb;
+  try { wb = XLSX.read(req.file.buffer, { type: 'buffer' }); }
+  catch (e) { return res.status(400).json({ error: 'Could not read the Excel file: ' + e.message }); }
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const raw = sheet ? XLSX.utils.sheet_to_json(sheet, { defval: '' }) : [];
+  if (!raw.length) return res.status(400).json({ error: 'The sheet has no data rows.' });
+
+  const orgByName = new Map();
+  db.prepare('SELECT id, name FROM organizations').all().forEach(o => orgByName.set(_norm(o.name), o.id));
+  const userByName = new Map();
+  db.prepare(`SELECT id, name FROM users WHERE is_active = 1`).all().forEach(u => {
+    userByName.set(_norm(u.name), u.id);
+    userByName.set(_norm(String(u.name).split(' ')[0]), u.id);
+  });
+  const STAGE_LC = {}; STAGES.forEach(s => STAGE_LC[s.toLowerCase()] = s);
+
+  const parsed = []; const errors = [];
+  raw.forEach((r) => {
+    const rowNum = (r.__rowNum__ != null ? r.__rowNum__ + 1 : parsed.length + errors.length + 2);
+    const title = _cell(r, 'Deal name', 'Deal', 'Title', 'Name');
+    const account = _cell(r, 'Account/Customer', 'Account', 'Customer', 'Company', 'Organization');
+    if (!title && !account && Object.values(r).every(v => String(v).trim() === '')) return; // blank row
+    const err = [];
+    if (!title) err.push('Missing Deal name');
+    if (!account) err.push('Missing Account/Customer');
+
+    let stage = 'Prospect';
+    const stageRaw = _cell(r, 'Stage');
+    if (stageRaw) { const m = STAGE_LC[stageRaw.toLowerCase()]; if (!m) err.push(`Invalid stage "${stageRaw}"`); else stage = m; }
+
+    let salesmanId = req.user.id;
+    const smRaw = _cell(r, 'Salesman', 'Sales Engineer', 'Owner');
+    if (smRaw) { const uid = userByName.get(_norm(smRaw)) || userByName.get(_norm(smRaw.split(' ')[0])); if (!uid) err.push(`Unknown salesman "${smRaw}"`); else salesmanId = uid; }
+
+    let closeIso = null;
+    const closeRaw = _cell(r, 'Expected close date', 'Expected closing', 'Close date');
+    if (closeRaw) { const d = new Date(closeRaw); if (!isNaN(d.getTime())) closeIso = d.toISOString().slice(0, 10); }
+
+    const groupsRaw = _cell(r, 'Product groups', 'Product group', 'Products');
+    const groups = groupsRaw ? groupsRaw.split(/[,;/]+/).map(s => s.trim()).filter(Boolean) : [];
+
+    const rec = {
+      rowNum, title, account,
+      contact_name: _cell(r, 'Contact name', 'Contact'),
+      contact_email: _cell(r, 'Contact email', 'Email'),
+      contact_phone: _cell(r, 'Contact phone', 'Phone'),
+      salesmanId, stage,
+      segment: _cell(r, 'Segment', 'Sector'),
+      district: _cell(r, 'Project location', 'Location', 'Area', 'District'),
+      location_url: _cell(r, 'Map link', 'Map', 'Location URL'),
+      close_date: closeIso,
+      notes: _cell(r, 'Notes', 'Remarks'),
+      product_group: groups.length ? JSON.stringify(groups) : null,
+      existingOrgId: orgByName.get(_norm(account)) || null,
+    };
+    if (err.length) errors.push({ row: rowNum, deal: title || account || '(blank)', reason: err.join('; ') });
+    else parsed.push(rec);
+  });
+
+  const newOrgNames = new Set();
+  parsed.forEach(p => { if (!p.existingOrgId) newOrgNames.add(_norm(p.account)); });
+  const report = {
+    total: parsed.length + errors.length, valid: parsed.length, skipped: errors.length, errors,
+    new_customers: newOrgNames.size, new_contacts: parsed.filter(p => p.contact_name).length,
+  };
+
+  if (!commit) return res.json({ preview: true, ...report });
+  if (!parsed.length) return res.status(400).json({ error: 'Nothing to import — every row had an error.', ...report });
+
+  db.exec('BEGIN');
+  try {
+    const batchId = db.prepare(`INSERT INTO import_batches (uploaded_by, filename) VALUES (?, ?)`)
+      .run(req.user.id, req.file.originalname || 'import.xlsx').lastInsertRowid;
+    const createdOrgIds = []; const createdContactIds = [];
+    const localOrg = new Map(orgByName);
+
+    const insOrg = db.prepare(`INSERT INTO organizations (name, type) VALUES (?, 'Customer')`);
+    const insContact = db.prepare(`INSERT INTO contacts (name, emails, phones, organization_id) VALUES (?,?,?,?)`);
+    const insArea = db.prepare(`INSERT OR IGNORE INTO areas (name) VALUES (?)`);
+    const insOpp = db.prepare(`INSERT INTO opportunities
+      (title, contact_id, org_id, segment, district, product_group, location_url, close_date, notes,
+       salesman_id, created_by, stage, status, import_batch_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'Active', ?)`);
+    const insHist = db.prepare(`INSERT INTO stage_history (opp_id, from_stage, to_stage, changed_by) VALUES (?, NULL, ?, ?)`);
+
+    let created = 0;
+    for (const p of parsed) {
+      let orgId = localOrg.get(_norm(p.account));
+      if (!orgId) { orgId = insOrg.run(p.account).lastInsertRowid; localOrg.set(_norm(p.account), orgId); createdOrgIds.push(orgId); }
+
+      let contactId = null;
+      if (p.contact_name) {
+        const existing = db.prepare(`SELECT id FROM contacts WHERE lower(name) = ? AND organization_id = ?`).get(_norm(p.contact_name), orgId);
+        if (existing) contactId = existing.id;
+        else {
+          contactId = insContact.run(p.contact_name,
+            JSON.stringify(p.contact_email ? [p.contact_email] : []),
+            JSON.stringify(p.contact_phone ? [p.contact_phone] : []), orgId).lastInsertRowid;
+          createdContactIds.push(contactId);
+        }
+      }
+      if (p.district) insArea.run(p.district);
+
+      const oppId = insOpp.run(p.title, contactId, orgId, p.segment || null, p.district || null,
+        p.product_group, p.location_url || null, p.close_date, p.notes || null,
+        p.salesmanId, req.user.id, p.stage, batchId).lastInsertRowid;
+      insHist.run(oppId, p.stage, req.user.id);
+      created++;
+    }
+    db.prepare(`UPDATE import_batches SET opp_count=?, created_org_ids=?, created_contact_ids=? WHERE id=?`)
+      .run(created, JSON.stringify(createdOrgIds), JSON.stringify(createdContactIds), batchId);
+    db.exec('COMMIT');
+    return res.json({ committed: true, batch_id: batchId, created, skipped: errors.length, errors,
+      new_customers: createdOrgIds.length, new_contacts: createdContactIds.length });
+  } catch (e) {
+    db.exec('ROLLBACK');
+    return res.status(500).json({ error: 'Import failed: ' + e.message });
+  }
+});
+
+// GET /api/opportunities/import-batches — recent imports (own, or all for admin)
+router.get('/import-batches', (req, res) => {
+  const isAdmin = req.user.role === 'admin';
+  const rows = db.prepare(`
+    SELECT b.*, u.name AS uploaded_by_name FROM import_batches b
+    LEFT JOIN users u ON u.id = b.uploaded_by
+    ${isAdmin ? '' : 'WHERE b.uploaded_by = ?'}
+    ORDER BY b.id DESC LIMIT 20
+  `).all(...(isAdmin ? [] : [req.user.id]));
+  res.json(rows);
+});
+
+// POST /api/opportunities/import-batches/:id/undo — remove exactly what a batch created
+router.post('/import-batches/:id/undo', (req, res) => {
+  const batch = db.prepare('SELECT * FROM import_batches WHERE id = ?').get(req.params.id);
+  if (!batch) return res.status(404).json({ error: 'Import not found.' });
+  if (batch.uploaded_by !== req.user.id && req.user.role !== 'admin')
+    return res.status(403).json({ error: 'Only the person who ran this import (or an admin) can undo it.' });
+
+  const orgIds = JSON.parse(batch.created_org_ids || '[]');
+  const contactIds = JSON.parse(batch.created_contact_ids || '[]');
+  db.exec('BEGIN');
+  try {
+    const opps = db.prepare('SELECT id FROM opportunities WHERE import_batch_id = ?').all(batch.id);
+    for (const { id } of opps) {
+      db.prepare('DELETE FROM activities WHERE opp_id = ?').run(id);
+      db.prepare('DELETE FROM notifications WHERE opp_id = ?').run(id);
+      db.prepare('DELETE FROM discount_approvals WHERE opp_id = ?').run(id);
+      db.prepare('DELETE FROM stage_history WHERE opp_id = ?').run(id);
+      db.prepare('DELETE FROM opp_labels WHERE opp_id = ?').run(id);
+      db.prepare('DELETE FROM opportunities WHERE id = ?').run(id);
+    }
+    // Remove the contacts/orgs this import created, but only if nothing else uses them.
+    let removedContacts = 0, removedOrgs = 0;
+    for (const cid of contactIds) {
+      const used = db.prepare('SELECT 1 FROM opportunities WHERE contact_id = ? LIMIT 1').get(cid);
+      if (!used) { db.prepare('DELETE FROM contacts WHERE id = ?').run(cid); removedContacts++; }
+    }
+    for (const oid of orgIds) {
+      const usedByOpp = db.prepare('SELECT 1 FROM opportunities WHERE org_id = ? LIMIT 1').get(oid);
+      const usedByContact = db.prepare('SELECT 1 FROM contacts WHERE organization_id = ? LIMIT 1').get(oid);
+      if (!usedByOpp && !usedByContact) { db.prepare('DELETE FROM organizations WHERE id = ?').run(oid); removedOrgs++; }
+    }
+    db.prepare('DELETE FROM import_batches WHERE id = ?').run(batch.id);
+    db.exec('COMMIT');
+    return res.json({ success: true, removed_deals: opps.length, removed_contacts: removedContacts, removed_orgs: removedOrgs });
+  } catch (e) {
+    db.exec('ROLLBACK');
+    return res.status(500).json({ error: 'Undo failed: ' + e.message });
+  }
+});
 
 // GET /api/opportunities
 router.get('/', (req, res) => {

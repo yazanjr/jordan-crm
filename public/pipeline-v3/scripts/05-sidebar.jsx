@@ -120,6 +120,15 @@ function Sidebar({ active = 'pipeline', onNav, onUserMenu, onNotifications }) {
           <NavItem id="pricelist"    icon={Layers}  label="Pricelist" />
           <NavItem id="costing"      icon={Trend}   label="Costing" />
         </div>
+        {(window.CURRENT_USER && window.CURRENT_USER.roleKey === 'admin') && (
+          <>
+            {!collapsed && <SectionLabel>Administration</SectionLabel>}
+            {collapsed && <SectionDivider />}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+              <NavItem id="settings"   icon={Settings} label="Settings" />
+            </div>
+          </>
+        )}
       </nav>
 
       {/* Collapse toggle button — sits between nav and footer */}

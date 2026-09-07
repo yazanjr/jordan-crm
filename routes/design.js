@@ -1209,6 +1209,64 @@ router.get('/quotation-versions/:id/costing', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/quotation-versions/:id/export.doc
+//   Client-facing quotation as a Word (.doc) download. Any signed-in user who
+//   can see the deal may download it; cost/margin columns are never included.
+// ---------------------------------------------------------------------------
+const { renderQuotationDoc } = require('../utils/quotationDoc');
+let _logoCache = null;
+function logoDataUri() {
+  if (_logoCache !== null) return _logoCache;
+  try {
+    const p = path.join(__dirname, '..', 'public', 'pipeline-v3', 'assets', 'img-mark.png');
+    _logoCache = 'data:image/png;base64,' + fs.readFileSync(p).toString('base64');
+  } catch { _logoCache = ''; }
+  return _logoCache;
+}
+
+router.get('/quotation-versions/:id/export.doc', (req, res) => {
+  const q = db.prepare(`SELECT * FROM quotation_versions WHERE id = ?`).get(+req.params.id);
+  if (!q) return res.status(404).json({ error: 'Quotation not found.' });
+
+  // Line items — cost_snapshot deliberately NOT selected (never in the client doc).
+  const line_items = db.prepare(`
+    SELECT line_num, category, model, description, qty, unit, unit_price, subtotal
+    FROM quotation_line_items WHERE quotation_version_id = ? ORDER BY line_num
+  `).all(q.id);
+
+  // Client name + attention from the linked request → opportunity → org/contact.
+  const reqRow = db.prepare(`SELECT opportunity_id FROM design_requests WHERE id = ?`).get(q.request_id);
+  let org_name = '', contact_name = '', salesman_name = '';
+  if (reqRow) {
+    const opp = db.prepare(`
+      SELECT org.name AS org_name, c.name AS contact_name, s.name AS salesman_name
+      FROM opportunities o
+      LEFT JOIN organizations org ON org.id = o.org_id
+      LEFT JOIN contacts c ON c.id = o.contact_id
+      LEFT JOIN users s ON s.id = o.salesman_id
+      WHERE o.id = ?
+    `).get(reqRow.opportunity_id) || {};
+    org_name = opp.org_name || '';
+    contact_name = opp.contact_name || '';
+    salesman_name = opp.salesman_name || '';
+  }
+
+  const html = renderQuotationDoc({
+    reference: q.reference, quote_date: q.quote_date, project_name: q.project_name,
+    city: q.city, project_type: q.project_type, brand: q.brand,
+    sales_engineer_name: q.sales_engineer_name || salesman_name,
+    design_engineer_name: q.design_engineer_name,
+    intro_text: q.intro_text, maintenance_text: q.maintenance_text, tnc_text: q.tnc_text,
+    org_name, contact_name, currency: 'JOD', line_items, logoDataUri: logoDataUri(),
+  });
+
+  const safeName = String(q.reference || q.project_name || `quotation-${q.id}`).replace(/[^\w.\- ]+/g, '_').trim() || `quotation-${q.id}`;
+  res.setHeader('Content-Type', 'application/msword; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${safeName}.doc"`);
+  res.send(html);
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/quotation-versions — index for the PM Costing list.
 // ---------------------------------------------------------------------------
 router.get('/quotation-versions', (req, res) => {

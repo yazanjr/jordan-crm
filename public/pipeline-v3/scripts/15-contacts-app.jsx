@@ -173,6 +173,7 @@ function ContactsApp() {
           if (id === 'my-tasks')     { window.location.href = 'MyTasks.html'; return; }
           if (id === 'pricelist')    { window.location.href = 'Pricelist.html'; return; }
           if (id === 'costing')      { window.location.href = 'QuotationCosting.html'; return; }
+          if (id === 'settings')     { window.location.href = 'Settings.html'; return; }
           setActiveNav(id);
         }}
         onUserMenu={(rect) => setPopover({ kind: 'user', rect })}

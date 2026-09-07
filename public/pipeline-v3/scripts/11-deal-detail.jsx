@@ -5,7 +5,7 @@
 // Field groups for the drawer body. Keys reference window.OPP_FIELDS; name/stage/value
 // live in the header and notes has its own section, so they're omitted here.
 const DETAIL_GROUPS = [
-  { title: 'Client & Team',  keys: ['account', 'ownerRep', 'owner', 'segment', 'district'] },
+  { title: 'Client & Team',  keys: ['account', 'ownerRep', 'owner', 'segment', 'district', 'locationUrl'] },
   { title: 'Partners',       keys: ['contractor', 'engOffice', 'personResponsible'] },
   { title: 'Classification', keys: ['system', 'subSystem', 'brand', 'installationBy'] },
   { title: 'Commercial',     keys: ['salesTax', 'priceExempted', 'signingPrice', 'expectedClosing', 'status'] },
@@ -13,10 +13,17 @@ const DETAIL_GROUPS = [
   { title: 'If Lost',        keys: ['lostNotes', 'lostToWhom'] },
 ];
 
+// Compact orange link used for the Google Maps affordances under Project Location.
+const mapLinkStyle = {
+  display: 'inline-flex', alignItems: 'center', gap: 5,
+  fontSize: 11.5, fontWeight: 600, color: 'var(--img-orange-700)',
+  textDecoration: 'none', cursor: 'pointer',
+};
+
 function DealDetail({ deal, onClose, onAdvance, onMore, onUpdate, onAction,
                      designRequests = [], onRequestDesign, onRequestModification, onRefreshDesign,
                      showActivity = true, showFiles = true }) {
-  const { Close, Calendar, Mail, Phone, Building, File, Chat, Attach, More, Plus, Check, Edit, Sparkle } = window.Icons;
+  const { Close, Calendar, Mail, Phone, Building, File, Chat, Attach, More, Plus, Check, Edit, Sparkle, MapPin } = window.Icons;
   if (!deal) return null;
 
   const save = (patch) => onUpdate?.(patch);
@@ -248,13 +255,41 @@ function DealDetail({ deal, onClose, onAdvance, onMore, onUpdate, onAction,
                 const display = (f.type === 'number' && (f.key === 'signingPrice' || f.key === 'value') && raw != null)
                   ? window.formatJOD(raw)
                   : (f.type === 'date' && raw ? window.formatDate(raw) : undefined);
-                return (
+                const fieldEl = (
                   <EditableField key={f.key} label={f.label} type={efType}
                     value={raw == null ? '' : raw}
                     options={opts}
                     display={display}
                     onSave={(v) => save({ [f.key]: v })} />
                 );
+                // Location gets clickable Google Maps affordances: search the typed
+                // area, and open the saved pin link if one was pasted.
+                if (f.key === 'locationUrl') {
+                  const hasPin = window.isLikelyUrl && window.isLikelyUrl(deal.locationUrl);
+                  const hasArea = (deal.district || '').trim().length > 0;
+                  return (
+                    <React.Fragment key={f.key}>
+                      {fieldEl}
+                      {(hasPin || hasArea) && (
+                        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', padding: '2px 0 6px' }}>
+                          {hasArea && (
+                            <a href={window.gmapsSearchUrl(deal.district)} target="_blank" rel="noopener noreferrer"
+                              style={mapLinkStyle}>
+                              <MapPin size={12} /> Search on Google Maps ↗
+                            </a>
+                          )}
+                          {hasPin && (
+                            <a href={String(deal.locationUrl).trim()} target="_blank" rel="noopener noreferrer"
+                              style={mapLinkStyle}>
+                              <MapPin size={12} /> Open saved pin ↗
+                            </a>
+                          )}
+                        </div>
+                      )}
+                    </React.Fragment>
+                  );
+                }
+                return fieldEl;
               })}
             </Section>
           ))}
@@ -311,6 +346,18 @@ function DealDetail({ deal, onClose, onAdvance, onMore, onUpdate, onAction,
                   <div style={{ fontSize: 11, color: 'var(--img-green-700)', marginTop: 2 }}>
                     Ready to move to Tender / continue negotiation
                   </div>
+                  {releasedQuote?.id && (
+                    <button
+                      onClick={() => window.downloadBlob(`/api/quotation-versions/${releasedQuote.id}/export.doc`, `${releasedQuote.reference || 'quotation'}.doc`).catch(err => window.alert(err.message || 'Download failed'))}
+                      style={{
+                        marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 6,
+                        padding: '6px 12px', borderRadius: 7, cursor: 'pointer',
+                        background: 'var(--bg-surface)', color: 'var(--img-green-700)',
+                        border: '1px solid var(--img-green-700)', fontSize: 12, fontWeight: 600,
+                      }}>
+                      <File size={13} /> Download quotation (Word)
+                    </button>
+                  )}
                   {releasedRequest.released_to_stage && (
                     <div style={{
                       marginTop: 6, fontSize: 11, fontWeight: 700,

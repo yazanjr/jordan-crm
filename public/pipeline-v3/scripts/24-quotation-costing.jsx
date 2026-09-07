@@ -333,6 +333,7 @@ function CostingApp() {
           if (id === 'design-board') { window.location.href = 'DesignBoard.html'; return; }
           if (id === 'my-tasks')     { window.location.href = 'MyTasks.html'; return; }
           if (id === 'pricelist')    { window.location.href = 'Pricelist.html'; return; }
+          if (id === 'settings')     { window.location.href = 'Settings.html'; return; }
         }}
         onUserMenu={(rect) => setPopover({ kind: 'user', rect })}
         onNotifications={(rect) => setPopover({ kind: 'notif', rect })}

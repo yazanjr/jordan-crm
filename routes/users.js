@@ -62,4 +62,35 @@ router.put('/:id', requirePerm('users.edit'), (req, res) => {
   res.json({ success: true });
 });
 
+// DELETE /api/users/:id  — permanently remove a user.
+// Users are referenced by deals, activities, notes, etc. (FKs are enforced), so
+// a hard delete only succeeds for accounts with no history — typically test
+// users. When the user has linked records we deactivate instead and say so, so
+// the caller never loses referential integrity. You also can't delete yourself
+// or the last active admin (that would lock everyone out of this very page).
+router.delete('/:id', requirePerm('users.edit'), (req, res) => {
+  const id = Number(req.params.id);
+  const user = db.prepare('SELECT id, role_id FROM users WHERE id = ?').get(id);
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+  if (id === req.user.id) return res.status(400).json({ error: 'You cannot remove your own account.' });
+
+  // Guard the last active admin.
+  const adminRole = db.prepare("SELECT id FROM roles WHERE name = 'admin'").get();
+  if (adminRole && user.role_id === adminRole.id) {
+    const activeAdmins = db.prepare('SELECT COUNT(*) AS n FROM users WHERE role_id = ? AND is_active = 1').get(adminRole.id).n;
+    if (activeAdmins <= 1) return res.status(400).json({ error: 'Cannot remove the last active admin.' });
+  }
+
+  try {
+    db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    clearPermCache(id);
+    res.json({ success: true, deleted: true });
+  } catch (e) {
+    // FK constraint — the user has history. Soft-remove instead.
+    db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(id);
+    clearPermCache(id);
+    res.json({ success: true, deleted: false, deactivated: true });
+  }
+});
+
 module.exports = router;

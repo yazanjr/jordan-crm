@@ -22,6 +22,10 @@ function TopNav({ active = 'pipeline', onNav, onUserMenu, onNotifications }) {
       { id: 'costing',   icon: Trend,  label: 'Costing' },
     ],
   ];
+  // Administration is admin-only (only admin holds settings.manage).
+  if (window.CURRENT_USER && window.CURRENT_USER.roleKey === 'admin') {
+    GROUPS.push([{ id: 'settings', icon: Settings, label: 'Settings' }]);
+  }
 
   const NavItem = ({ id, icon: Icon, label }) => {
     const isActive = active === id;
