@@ -220,7 +220,10 @@ function QuotationEditor() {
       if (j !== i) return it;
       const v = Number(val) || 0;
       const computed = it.list_price ? +(it.list_price * (1 - discountFraction)).toFixed(2) : 0;
-      return { ...it, unit_price: v, is_override: Math.abs(v - computed) > 0.5 ? 1 : 0 };
+      // Keep discount in step with the manually-entered price so the two never
+      // contradict each other (discount = 1 − price/list, clamped to 0–99%).
+      const discount_pct = it.list_price ? Math.max(0, Math.min(0.99, +(1 - v / it.list_price).toFixed(4))) : (it.discount_pct || 0);
+      return { ...it, unit_price: v, discount_pct, is_override: Math.abs(v - computed) > 0.5 ? 1 : 0 };
     }));
   };
 
@@ -304,7 +307,10 @@ function QuotationEditor() {
         line_items: validItems.map(it => ({
           sku_id: it.sku_id, category: it.category, model: it.model,
           description: it.description, qty: +it.qty, unit: it.unit,
-          list_price: it.list_price, discount_pct: discountFraction,
+          list_price: it.list_price,
+          // Per-line discount so an overridden price is stored with a matching
+          // discount; falls back to the global discount when the line has none.
+          discount_pct: (it.discount_pct != null ? it.discount_pct : discountFraction),
           unit_price: it.unit_price,
         })),
         files: pendingFiles,

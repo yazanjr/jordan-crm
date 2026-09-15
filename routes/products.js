@@ -8,6 +8,7 @@ const fs      = require('fs');
 const XLSX    = require('xlsx');
 const db      = require('../database/db');
 const demoAuth = require('../middleware/demoAuth');
+const pricing = require('../utils/pricing');
 
 const router = express.Router();
 router.use(demoAuth);
@@ -16,7 +17,71 @@ const COST_COLS = [
   'fob_price_usd', 'fob_net_usd', 'fob_net_jod',
   'cost_with_shipping', 'cost_with_customs', 'cost_with_extra_multi',
   'cost_jod',
+  // GREE module cost tiers (also PM-only)
+  'cost_inclusive', 'cost_stax_exempt', 'cost_exempted',
 ];
+
+// ── GREE pricing engine helpers ─────────────────────────────────────────────
+// Load all pricing_params into { globals, byCategory }. Category params are keyed
+// by the suffix after the last '_' in the code (SHIP/CUST/EXTRA/TAX/COPPER/INSTALL/T1..T4).
+const _catKey = (s) => String(s == null ? '' : s).trim().toLowerCase();
+function loadPricingParams() {
+  const rows = db.prepare('SELECT category, code, value FROM pricing_params').all();
+  const raw = {}; const byCategory = {};
+  for (const r of rows) {
+    if (_catKey(r.category) === 'global') { raw[r.code] = r.value; continue; }
+    const key = String(r.code).split('_').pop();
+    // Key categories case-insensitively — the Parameters sheet uses "U-MATCH PROJECTS"
+    // while Item Master uses "U-Match Projects".
+    (byCategory[_catKey(r.category)] = byCategory[_catKey(r.category)] || {})[key] = r.value;
+  }
+  return {
+    globals: { fx: raw.FX_USD_JOD, roundStep: raw.ROUND_STEP, staxDiv: raw.STAX_DIV, custDiv: raw.CUST_DIV },
+    byCategory,
+  };
+}
+// A category's engine params + its discount tiers (fractions, in order).
+function catParamsFor(byCategory, category) {
+  const p = byCategory[_catKey(category)] || {};
+  return {
+    params: { ship: p.SHIP, cust: p.CUST, extra: p.EXTRA, tax: p.TAX, copper: p.COPPER, install: p.INSTALL },
+    tiers: ['T1', 'T2', 'T3', 'T4'].map(t => p[t]).filter(v => v != null),
+  };
+}
+// Recompute + store one item's costs/prices from its inputs. Mirrors cost_jod and
+// list_price so all existing (non-GREE-aware) code keeps working.
+function recomputeItemById(id, cache) {
+  const s = db.prepare('SELECT * FROM product_skus WHERE id = ?').get(id);
+  if (!s) return;
+  const pp = cache || loadPricingParams();
+  const { params } = catParamsFor(pp.byCategory, s.category_l1);
+  const costs  = pricing.computeCosts(s.fob_net_usd, params, pp.globals);
+  const prices = pricing.computePrices(s.price1_inclusive, pp.globals);
+  const listPrice = s.price1_inclusive != null ? s.price1_inclusive : (s.list_price != null ? s.list_price : 0);
+  db.prepare(`UPDATE product_skus SET
+      cost_inclusive=?, cost_stax_exempt=?, cost_exempted=?,
+      price2_stax_exempt=?, price3_exempted=?, cost_jod=?, list_price=?, updated_at=datetime('now')
+    WHERE id=?`).run(
+      costs.cost_inclusive, costs.cost_stax_exempt, costs.cost_exempted,
+      prices.price2_stax_exempt, prices.price3_exempted, costs.cost_inclusive, listPrice, id);
+}
+// Recompute every item that has pricing inputs (e.g. after a parameter change).
+function recomputeAll() {
+  const pp = loadPricingParams();
+  // Only GREE pricing-module items (they carry an item_id). Never touch legacy
+  // SKUs whose category has no parameters — that would zero their cost.
+  const ids = db.prepare('SELECT id FROM product_skus WHERE item_id IS NOT NULL').all();
+  db.exec('BEGIN');
+  try { for (const { id } of ids) recomputeItemById(id, pp); db.exec('COMMIT'); }
+  catch (e) { db.exec('ROLLBACK'); throw e; }
+  return ids.length;
+}
+// Attach GP@list + GP@tiers to a SKU row (for cost-viewers), using its category tiers.
+function withGP(row, pp) {
+  const { tiers } = catParamsFor(pp.byCategory, row.category_l1);
+  const gp = pricing.computeGP(row.price1_inclusive != null ? row.price1_inclusive : row.list_price, row.cost_inclusive != null ? row.cost_inclusive : row.cost_jod, tiers);
+  return { ...row, gp_list: gp.gp_list, gp_tiers: gp.gp_tiers };
+}
 
 function canViewCosts(user) {
   return user && (user.can_view_costs === 1 || user.role === 'admin' || user.role === 'product_manager');
@@ -132,12 +197,14 @@ router.get('/product-skus', (req, res) => {
   if (category_l1)  { clauses.push('category_l1 = ?');   params.push(category_l1); }
   if (category_l2)  { clauses.push('category_l2 = ?');   params.push(category_l2); }
   if (category_l3)  { clauses.push('category_l3 = ?');   params.push(category_l3); }
-  if (search)   { clauses.push('(model LIKE ? OR description LIKE ? OR erp_code LIKE ?)');
-                  params.push(`%${search}%`, `%${search}%`, `%${search}%`); }
+  if (search)   { clauses.push('(model LIKE ? OR description LIKE ? OR erp_code LIKE ? OR item_id LIKE ?)');
+                  params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`); }
   const rows = db.prepare(
     `SELECT * FROM product_skus WHERE ${clauses.join(' AND ')} ORDER BY category_l2, category_l3, model LIMIT 500`
   ).all(...params);
-  res.json(canViewCosts(req.user) ? rows : rows.map(stripCosts));
+  if (!canViewCosts(req.user)) return res.json(rows.map(stripCosts));
+  const pp = loadPricingParams();
+  res.json(rows.map(r => withGP(r, pp)));
 });
 
 // ── One SKU row → an export cell object. Column names match the importer's
@@ -439,8 +506,11 @@ router.post('/pricelist-versions/upload', requirePM, upload.single('file'), (req
 // (or creates a "manual" version if none active yet).
 router.post('/product-skus', requirePM, (req, res) => {
   const { price_book_id, category_l1, category_l2, category_l3, model, description, unit, list_price, erp_code } = req.body || {};
-  if (!price_book_id || !model || list_price == null) {
-    return res.status(400).json({ error: 'price_book_id, model, and list_price required.' });
+  // A GREE item may be priced via price1_inclusive instead of list_price.
+  const price1In = req.body.price1_inclusive != null && req.body.price1_inclusive !== '' ? Number(req.body.price1_inclusive) : null;
+  const effList = list_price != null ? Number(list_price) : (price1In != null ? price1In : null);
+  if (!price_book_id || !model || effList == null) {
+    return res.status(400).json({ error: 'price_book_id, model, and a price (list_price or price1_inclusive) required.' });
   }
   const l1 = category_l1 ? String(category_l1).trim() : null;
   const l2 = category_l2 ? String(category_l2).trim() : null;
@@ -476,9 +546,18 @@ router.post('/product-skus', requirePM, (req, res) => {
       String(model).trim(),
       description ? String(description).trim() : null,
       unit ? String(unit).trim() : 'pc',
-      Number(list_price)
+      effList
     );
-    const row = db.prepare(`SELECT * FROM product_skus WHERE id = ?`).get(info.lastInsertRowid);
+    const newId = info.lastInsertRowid;
+    // Persist GREE inputs (FOB / Price 1 / Price Iraq / item_id / section / status) and recompute.
+    const b = req.body;
+    if (['price1_inclusive', 'fob_net_usd', 'price_iraq', 'item_id', 'section', 'status'].some(k => b[k] !== undefined)) {
+      const n = (k) => b[k] === undefined || b[k] === '' || b[k] == null ? null : Number(b[k]);
+      db.prepare(`UPDATE product_skus SET item_id=?, section=?, status=?, price1_inclusive=?, fob_net_usd=?, price_iraq=? WHERE id=?`)
+        .run(b.item_id || null, b.section || null, b.status || null, n('price1_inclusive'), n('fob_net_usd'), n('price_iraq'), newId);
+      recomputeItemById(newId);
+    }
+    const row = db.prepare(`SELECT * FROM product_skus WHERE id = ?`).get(newId);
     res.status(201).json(canViewCosts(req.user) ? row : stripCosts(row));
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -519,7 +598,24 @@ router.put('/product-skus/:id', requirePM, (req, res) => {
      WHERE id = ?
   `).run(next.category, l1, l2, l3, next.model, next.description, next.unit, next.list_price, next.erp_code, id);
 
-  const updated = db.prepare(`SELECT * FROM product_skus WHERE id = ?`).get(id);
+  // GREE module fields: when FOB / Price 1 / Price Iraq / status are supplied, persist them
+  // and recompute the cost tiers, Price 2/3 and (mirrored) list_price via the engine.
+  const b = req.body || {};
+  if (['price1_inclusive', 'fob_net_usd', 'price_iraq', 'status', 'section'].some(k => b[k] !== undefined)) {
+    const numOrRow = (k) => b[k] === undefined ? row[k] : (b[k] === '' || b[k] == null ? null : Number(b[k]));
+    const p1  = numOrRow('price1_inclusive');
+    const fob = numOrRow('fob_net_usd');
+    const iraq = numOrRow('price_iraq');
+    const status = b.status !== undefined ? (b.status || null) : row.status;
+    const section = b.section !== undefined ? (b.section || null) : row.section;
+    db.prepare(`UPDATE product_skus SET price1_inclusive=?, fob_net_usd=?, price_iraq=?, status=?, section=? WHERE id=?`)
+      .run(p1, fob, iraq, status, section, id);
+    recomputeItemById(id);
+  }
+
+  let updated = db.prepare(`SELECT * FROM product_skus WHERE id = ?`).get(id);
+  const pp = loadPricingParams();
+  updated = withGP(updated, pp);
   res.json(canViewCosts(req.user) ? updated : stripCosts(updated));
 });
 
@@ -531,6 +627,206 @@ router.delete('/product-skus/:id', requirePM, (req, res) => {
   if (!row) return res.status(404).json({ error: 'SKU not found.' });
   db.prepare(`UPDATE product_skus SET active = 0 WHERE id = ?`).run(id);
   res.json({ ok: true, id });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GREE PRICING MODULE — parameters, workbook import, margin check
+// ═══════════════════════════════════════════════════════════════════════════
+
+// GET /api/pricing-params — grouped params (GLOBAL first, then categories).
+router.get('/pricing-params', requirePM, (req, res) => {
+  const rows = db.prepare(`SELECT id, category, code, label, value FROM pricing_params ORDER BY (category='GLOBAL') DESC, category, code`).all();
+  res.json(rows);
+});
+
+// PUT /api/pricing-params  { updates: [{code, value}] }  → save + recompute all items.
+router.put('/pricing-params', requirePM, (req, res) => {
+  const updates = Array.isArray(req.body.updates) ? req.body.updates : [];
+  if (!updates.length) return res.status(400).json({ error: 'No updates.' });
+  db.exec('BEGIN');
+  try {
+    const upd = db.prepare(`UPDATE pricing_params SET value=?, updated_at=datetime('now'), updated_by=? WHERE code=?`);
+    for (const u of updates) upd.run(Number(u.value) || 0, req.user.id, String(u.code));
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); return res.status(500).json({ error: e.message }); }
+  let recomputed = 0;
+  try { recomputed = recomputeAll(); } catch (e) { return res.status(500).json({ error: 'Saved, but recompute failed: ' + e.message }); }
+  res.json({ ok: true, recomputed });
+});
+
+// GET /api/pricing-tiers — the discount tiers per category (for the pricelist GP table + UI).
+router.get('/pricing-tiers', (req, res) => {
+  const pp = loadPricingParams();
+  const out = {};
+  Object.keys(pp.byCategory).forEach(cat => { out[cat] = catParamsFor(pp.byCategory, cat).tiers; });
+  res.json(out);
+});
+
+// GET /api/product-skus/:id/buildup — the step-by-step cost chain for one item (detail view).
+router.get('/product-skus/:id/buildup', (req, res) => {
+  if (!canViewCosts(req.user)) return res.status(403).json({ error: 'Cost view required.' });
+  const s = db.prepare('SELECT * FROM product_skus WHERE id = ?').get(+req.params.id);
+  if (!s) return res.status(404).json({ error: 'SKU not found.' });
+  const pp = loadPricingParams();
+  const { params, tiers } = catParamsFor(pp.byCategory, s.category_l1);
+  const g = pp.globals;
+  const fob = Number(s.fob_net_usd) || 0;
+  const jod = pricing.r0(fob * (Number(g.fx) || 0));
+  const shipped = pricing.r0(jod * (1 + (Number(params.ship) || 0)));
+  const customs = pricing.r0(shipped * (1 + (Number(params.cust) || 0)));
+  const extraFull = pricing.r0(customs * (1 + (Number(params.extra) || 0)));
+  const taxed = pricing.r0(extraFull * (1 + (Number(params.tax) || 0)));
+  const adders = (Number(params.copper) || 0) + (Number(params.install) || 0);
+  const gp = pricing.computeGP(s.price1_inclusive, s.cost_inclusive, tiers);
+  res.json({
+    category: s.category_l1, fob_net_usd: fob, fx: g.fx, round_step: g.roundStep, params, adders,
+    steps: [
+      { label: 'FOB × FX → JOD', value: jod },
+      { label: `+ Shipping ${(params.ship * 100 || 0)}%`, value: shipped },
+      { label: `+ Customs ${(params.cust * 100 || 0)}%`, value: customs },
+      { label: `+ Extra ${(params.extra * 100 || 0)}%`, value: extraFull },
+      { label: `+ Sales tax ${(params.tax * 100 || 0)}%`, value: taxed },
+    ],
+    costs: { inclusive: s.cost_inclusive, stax_exempt: s.cost_stax_exempt, exempted: s.cost_exempted, adders },
+    prices: { price1: s.price1_inclusive, price2: s.price2_stax_exempt, price3: s.price3_exempted, iraq: s.price_iraq },
+    gp, tiers,
+  });
+});
+
+// POST /api/pricing/import — import the GREE workbook (Parameters + Item Master sheets).
+const uploadsDir2 = path.join(process.env.UPLOADS_PATH || './uploads', 'pricing');
+fs.mkdirSync(uploadsDir2, { recursive: true });
+const pricingUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+
+router.post('/pricing/import', requirePM, pricingUpload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded (field "file").' });
+  let wb;
+  try { wb = XLSX.read(req.file.buffer, { type: 'buffer' }); }
+  catch (e) { return res.status(400).json({ error: 'Could not read Excel: ' + e.message }); }
+  const norm = s => String(s == null ? '' : s).trim().toLowerCase();
+  const findSheet = (...names) => wb.SheetNames.find(n => names.some(x => norm(n).includes(norm(x))));
+  const paramSheet = findSheet('parameters');
+  const itemSheet = findSheet('item master', 'items');
+  if (!itemSheet) return res.status(400).json({ error: 'No "Item Master" sheet found.' });
+
+  db.exec('BEGIN');
+  try {
+    // 1) Parameters → pricing_params (upsert by code).
+    let paramsUpserted = 0;
+    if (paramSheet) {
+      const prows = XLSX.utils.sheet_to_json(wb.Sheets[paramSheet], { header: 1, defval: null });
+      const hi = prows.findIndex(r => Array.isArray(r) && r.some(c => norm(c) === 'param code'));
+      const start = hi >= 0 ? hi + 1 : 0;
+      const up = db.prepare(`INSERT INTO pricing_params (category, code, label, value) VALUES (?,?,?,?)
+        ON CONFLICT(code) DO UPDATE SET category=excluded.category, label=excluded.label, value=excluded.value, updated_at=datetime('now')`);
+      for (let i = start; i < prows.length; i++) {
+        const r = prows[i]; if (!r) continue;
+        // columns: [Category, Param code, Parameter, Value] possibly offset by a leading null
+        const cells = r.filter(c => c !== null && c !== '');
+        // find code (has an underscore) + value (a number)
+        const code = (r.find(c => typeof c === 'string' && /_/.test(c) && c === c.toUpperCase())) || null;
+        if (!code) continue;
+        const idx = r.indexOf(code);
+        const category = r.slice(0, idx).reverse().find(c => typeof c === 'string' && c.trim()) || 'GLOBAL';
+        const label = r[idx + 1] != null ? String(r[idx + 1]) : null;
+        const value = Number(r.slice(idx + 1).find(c => c != null && c !== '' && Number.isFinite(Number(c))));
+        up.run(String(category).trim(), String(code).trim(), label, Number.isFinite(value) ? value : 0);
+        paramsUpserted++;
+      }
+    }
+
+    // 2) Item Master → product_skus (upsert by item_id, under a GREE brand/book).
+    const brandName = 'GREE';
+    let brand = db.prepare('SELECT id FROM brands WHERE name = ?').get(brandName);
+    if (!brand) brand = { id: db.prepare('INSERT INTO brands (name, description) VALUES (?, ?)').run(brandName, 'GREE HVAC').lastInsertRowid };
+    let book = db.prepare('SELECT id FROM price_books WHERE brand_id = ? AND name = ?').get(brand.id, 'GREE Pricing Module');
+    if (!book) book = { id: db.prepare('INSERT INTO price_books (brand_id, name, description, created_by) VALUES (?,?,?,?)').run(brand.id, 'GREE Pricing Module', 'From GREE_CRM_Pricing_Module.xlsx', req.user.id).lastInsertRowid };
+    const bookId = book.id;
+
+    const irows = XLSX.utils.sheet_to_json(wb.Sheets[itemSheet], { defval: null });
+    const pp = loadPricingParams();
+    const cell = (row, ...names) => { for (const k of Object.keys(row)) { if (names.some(n => norm(k) === norm(n))) return row[k]; } return null; };
+    const numOrNull = v => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+
+    const findByItem = db.prepare('SELECT id FROM product_skus WHERE item_id = ?');
+    const insItem = db.prepare(`INSERT INTO product_skus
+      (item_id, brand, price_book_id, category, category_l1, category_l2, section, erp_code, model, new_model,
+       description, capacity, unit, status, active, fob_net_usd, price1_inclusive, price_iraq, list_price)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    const updItem = db.prepare(`UPDATE product_skus SET
+       brand=?, price_book_id=?, category=?, category_l1=?, category_l2=?, section=?, erp_code=?, model=?, new_model=?,
+       description=?, capacity=?, unit=?, status=?, active=?, fob_net_usd=?, price1_inclusive=?, price_iraq=?, list_price=?, updated_at=datetime('now')
+      WHERE id=?`);
+
+    let inserted = 0, updated = 0, skipped = 0;
+    for (const r of irows) {
+      const itemId = cell(r, 'Item ID');
+      const model = cell(r, 'Model');
+      if (!itemId || !model) { skipped++; continue; }
+      const category = cell(r, 'Category');
+      const section = cell(r, 'Section');
+      const price1 = numOrNull(cell(r, 'Price 1 Inclusive (JOD)', 'Price 1', 'Price 1 Inclusive'));
+      const listPrice = price1 != null ? price1 : 0;
+      const activeYN = String(cell(r, 'Active') || '').trim().toUpperCase() === 'Y' ? 1 : 0;
+      const vals = [
+        String(itemId).trim(), brandName, bookId,
+        section || category || '(uncategorized)', category || null, section || null, section || null,
+        cell(r, 'ERP Code') || null, String(model).trim(), cell(r, 'New model (2026)', 'New model') || null,
+        cell(r, 'Description') || null, cell(r, 'Capacity') != null ? String(cell(r, 'Capacity')) : null,
+        cell(r, 'UoM') || 'pc', cell(r, 'Status') || null,
+        // Keep phased-out items VISIBLE in the pricelist (active=1) but flagged by status.
+        1,
+        numOrNull(cell(r, 'FOB Net (USD)', 'FOB Net', 'FOB')), price1,
+        numOrNull(cell(r, 'Price Iraq (JOD)', 'Price Iraq')), listPrice,
+      ];
+      const existing = findByItem.get(String(itemId).trim());
+      let id;
+      // updItem's SET list starts at `brand` (item_id is the match key), so skip vals[0].
+      if (existing) { updItem.run(...vals.slice(1), existing.id); id = existing.id; updated++; }
+      else { id = insItem.run(...vals).lastInsertRowid; inserted++; }
+      recomputeItemById(id, pp);   // compute costs/prices from FOB + Price1
+    }
+    db.exec('COMMIT');
+    res.json({ ok: true, params_upserted: paramsUpserted, items_inserted: inserted, items_updated: updated, skipped, brand: brandName, price_book_id: bookId });
+  } catch (e) {
+    db.exec('ROLLBACK');
+    res.status(500).json({ error: 'Import failed: ' + e.message });
+  }
+});
+
+// POST /api/pricing/margin-check — the Special Price Simulator engine.
+// body: { basis:'inclusive'|'stax'|'exempted', target_gp, lines:[{sku_id|item_id, qty, special_price}] }
+router.post('/pricing/margin-check', (req, res) => {
+  if (!canViewCosts(req.user)) return res.status(403).json({ error: 'Cost view required.' });
+  const basis = ['inclusive', 'stax', 'exempted'].includes(req.body.basis) ? req.body.basis : 'inclusive';
+  const targetGP = Number(req.body.target_gp) || 0;
+  const priceCol = { inclusive: 'price1_inclusive', stax: 'price2_stax_exempt', exempted: 'price3_exempted' }[basis];
+  const costCol  = { inclusive: 'cost_inclusive',   stax: 'cost_stax_exempt',   exempted: 'cost_exempted'   }[basis];
+  const lines = (Array.isArray(req.body.lines) ? req.body.lines : []).map((l, i) => {
+    const sku = l.sku_id ? db.prepare('SELECT * FROM product_skus WHERE id = ?').get(+l.sku_id)
+              : db.prepare('SELECT * FROM product_skus WHERE item_id = ?').get(String(l.item_id || ''));
+    if (!sku) return { row: i + 1, error: 'Item not found' };
+    const qty = Number(l.qty) || 0;
+    const listPrice = Number(sku[priceCol]) || 0;
+    const unitCost = Number(sku[costCol]) || 0;
+    const special = l.special_price != null && l.special_price !== '' ? Number(l.special_price) : listPrice;
+    const implied_discount = listPrice > 0 ? +(1 - special / listPrice).toFixed(4) : 0;
+    const revenue = +(qty * special).toFixed(2);
+    const cost_total = +(qty * unitCost).toFixed(2);
+    const gp_value = +(revenue - cost_total).toFixed(2);
+    const gp_pct = revenue > 0 ? +(gp_value / revenue).toFixed(4) : null;
+    return { row: i + 1, sku_id: sku.id, item_id: sku.item_id, model: sku.model, category: sku.category_l1,
+      qty, list_price: listPrice, unit_cost: unitCost, special_price: special,
+      implied_discount, revenue, cost_total, gp_value, gp_pct, phased_out: /phased/i.test(sku.status || '') };
+  });
+  const valid = lines.filter(l => !l.error);
+  const totalRevenue = valid.reduce((s, l) => s + (l.revenue || 0), 0);
+  const totalCost = valid.reduce((s, l) => s + (l.cost_total || 0), 0);
+  const gp_value = +(totalRevenue - totalCost).toFixed(2);
+  const gp_pct = totalRevenue > 0 ? +(gp_value / totalRevenue).toFixed(4) : null;
+  res.json({ basis, target_gp: targetGP, lines,
+    totals: { revenue: totalRevenue, cost: totalCost, gp_value, gp_pct },
+    verdict: gp_pct == null ? null : (gp_pct >= targetGP ? 'OK' : 'BELOW-TARGET') });
 });
 
 module.exports = router;

@@ -167,6 +167,49 @@ const lostReasons = [
 const insertLR = db.prepare(`INSERT OR IGNORE INTO lost_reasons (label) VALUES (?)`);
 lostReasons.forEach(l => insertLR.run(l));
 
+// ── GREE pricing parameters (from GREE_CRM_Pricing_Module.xlsx) ─────────────
+// INSERT OR IGNORE so re-seeding never clobbers values the pricing owner edited.
+const pricingParams = [
+  ['GLOBAL', 'FX_USD_JOD', 'USD to JOD exchange rate', 0.71],
+  ['GLOBAL', 'ROUND_STEP', 'Rounding step for published prices (JOD)', 5],
+  ['GLOBAL', 'STAX_DIV',   'Sales-tax divisor (Inclusive → Sales-Tax-Exempt)', 1.16],
+  ['GLOBAL', 'CUST_DIV',   'Customs divisor (STax-Exempt → Fully Exempted)', 1.15],
+  ['U-Match Projects', 'UMP_SHIP', 'Shipping %', 0.10],
+  ['U-Match Projects', 'UMP_CUST', 'Custom duties %', 0.16],
+  ['U-Match Projects', 'UMP_EXTRA', 'Extra multi %', 0.05],
+  ['U-Match Projects', 'UMP_TAX', 'Sales tax %', 0.16],
+  ['U-Match Projects', 'UMP_COPPER', 'Free copper pipes (JOD/set)', 140],
+  ['U-Match Projects', 'UMP_INSTALL', 'Installation (JOD/set)', 75],
+  ['U-Match Projects', 'UMP_T1', 'Discount tier 1 (Sales Engineer)', 0.25],
+  ['U-Match Projects', 'UMP_T2', 'Discount tier 2 (HVAC Manager)', 0.40],
+  ['GMV', 'GMV_SHIP', 'Shipping %', 0.12],
+  ['GMV', 'GMV_CUST', 'Custom duties %', 0.16],
+  ['GMV', 'GMV_EXTRA', 'Extra multi %', 0.05],
+  ['GMV', 'GMV_TAX', 'Sales tax %', 0.16],
+  ['GMV', 'GMV_T1', 'Discount tier 1', 0.25],
+  ['GMV', 'GMV_T2', 'Discount tier 2', 0.30],
+  ['GMV', 'GMV_T3', 'Discount tier 3', 0.35],
+  ['GMV', 'GMV_T4', 'Discount tier 4 (deepest)', 0.40],
+  ['FCU', 'FCU_SHIP', 'Shipping %', 0.12],
+  ['FCU', 'FCU_CUST', 'Custom duties %', 0.16],
+  ['FCU', 'FCU_EXTRA', 'Extra multi %', 0.05],
+  ['FCU', 'FCU_TAX', 'Sales tax %', 0.16],
+  ['FCU', 'FCU_T1', 'Discount tier 1', 0.25],
+  ['FCU', 'FCU_T2', 'Discount tier 2', 0.30],
+  ['FCU', 'FCU_T3', 'Discount tier 3', 0.35],
+  ['FCU', 'FCU_T4', 'Discount tier 4 (deepest)', 0.40],
+  ['CCU', 'CCU_SHIP', 'Shipping %', 0.20],
+  ['CCU', 'CCU_CUST', 'Custom duties %', 0.16],
+  ['CCU', 'CCU_EXTRA', 'Extra multi %', 0.05],
+  ['CCU', 'CCU_TAX', 'Sales tax %', 0.16],
+  ['CCU', 'CCU_T1', 'Discount tier 1', 0.25],
+  ['CCU', 'CCU_T2', 'Discount tier 2', 0.30],
+  ['CCU', 'CCU_T3', 'Discount tier 3', 0.35],
+  ['CCU', 'CCU_T4', 'Discount tier 4 (deepest)', 0.40],
+];
+const insertPP = db.prepare(`INSERT OR IGNORE INTO pricing_params (category, code, label, value) VALUES (?, ?, ?, ?)`);
+pricingParams.forEach(p => insertPP.run(p[0], p[1], p[2], p[3]));
+
 console.log('✅  Seed complete!');
 console.log(`    Default password for all users: ${DEFAULT_PASSWORD}`);
 console.log('    Users: admin, essam, yazan, mahmoud, sally, omar, hilal  (@img.com)');

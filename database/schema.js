@@ -710,6 +710,37 @@ module.exports = function applySchema(db) {
   `);
   addColumnIfMissing('opportunities', 'import_batch_id', `INTEGER REFERENCES import_batches(id)`);
 
+  // ── GREE pricing module ──────────────────────────────────────────────────
+  // Global + per-category parameters that drive the FOB→cost→price→GP engine
+  // (utils/pricing.js). One row per variable; edited by the pricing owner.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pricing_params (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      category   TEXT NOT NULL,        -- 'GLOBAL' or a category name (U-Match Projects, GMV, FCU, CCU)
+      code       TEXT NOT NULL UNIQUE, -- e.g. FX_USD_JOD, GMV_SHIP, UMP_T1
+      label      TEXT,
+      value      REAL DEFAULT 0,
+      updated_at TEXT DEFAULT (datetime('now')),
+      updated_by INTEGER REFERENCES users(id)
+    );
+  `);
+  // Item Master extensions on product_skus. FOB + Price 1 are inputs; the rest are
+  // computed by utils/pricing.js and stored (denormalised) for speed / export.
+  addColumnIfMissing('product_skus', 'item_id',            `TEXT`);
+  addColumnIfMissing('product_skus', 'section',            `TEXT`);   // sub-group under Category
+  addColumnIfMissing('product_skus', 'new_model',          `TEXT`);
+  addColumnIfMissing('product_skus', 'capacity',           `TEXT`);
+  addColumnIfMissing('product_skus', 'status',             `TEXT`);   // Quotation/PI, Estimate, PHASED OUT…
+  addColumnIfMissing('product_skus', 'fob_net_usd',        `REAL`);   // (already present from the old build-up; ensure it exists)
+  addColumnIfMissing('product_skus', 'cost_inclusive',     `REAL`);
+  addColumnIfMissing('product_skus', 'cost_stax_exempt',   `REAL`);
+  addColumnIfMissing('product_skus', 'cost_exempted',      `REAL`);
+  addColumnIfMissing('product_skus', 'price1_inclusive',   `REAL`);
+  addColumnIfMissing('product_skus', 'price2_stax_exempt', `REAL`);
+  addColumnIfMissing('product_skus', 'price3_exempted',    `REAL`);
+  addColumnIfMissing('product_skus', 'price_iraq',         `REAL`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_skus_item_id ON product_skus(item_id);`);
+
   // ── Indexes ────────────────────────────────────────────────────────────────
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_opps_salesman    ON opportunities(salesman_id);

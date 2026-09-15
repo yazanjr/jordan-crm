@@ -33,6 +33,8 @@ function PricelistApp() {
   const [bulkOpen, setBulkOpen]   = useState(false);
   const [uploadMode, setUploadMode] = useState('merge'); // 'merge' | 'replace'
   const [busy, setBusy]           = useState(false);
+  const [paramsOpen, setParamsOpen] = useState(false);   // GREE parameters editor
+  const [buildupId, setBuildupId]   = useState(null);    // SKU id whose build-up modal is open
   const fireToast = (msg, opts={}) => setToast({ msg, ...opts });
 
   // Drop the selection whenever the book or filters change (ids no longer shown).
@@ -87,7 +89,7 @@ function PricelistApp() {
   }, [bookId, groupFilter, familyFilter, search]);
 
   // group → families lookup for the cascading filters + modal.
-  const groupList = React.useMemo(() => categoryTree.flatMap(t => t.groups.map(g => g.l2)), [categoryTree]);
+  const groupList = React.useMemo(() => [...new Set(categoryTree.flatMap(t => t.groups.map(g => g.l2)))], [categoryTree]);
   const familiesOf = React.useMemo(() => { const m = {}; categoryTree.forEach(t => t.groups.forEach(g => { m[g.l2] = g.families; })); return m; }, [categoryTree]);
   useEffect(() => { reload(); }, [reload]);
 
@@ -125,18 +127,22 @@ function PricelistApp() {
     return '/api/product-skus/export?' + qs.toString();
   };
   const bookName = () => (booksForBrand.find(b => b.id === bookId) || {}).name || 'pricelist';
+  // Returns the download promise so callers can AWAIT it — critical when an
+  // export is followed by a delete (must finish downloading rows while they're
+  // still active, otherwise the file comes out empty).
   const doExport = (ids) => {
-    if (!bookId) { fireToast('Pick a price book first.', { danger: true }); return; }
+    if (!bookId) { fireToast('Pick a price book first.', { danger: true }); return Promise.resolve(); }
     const fname = `${bookName()}${ids && ids.length ? `-${ids.length}-selected` : ''}-${new Date().toISOString().slice(0,10)}.xlsx`;
-    window.downloadBlob(exportUrl(ids), fname).catch(e => fireToast(e.message || 'Export failed', { danger: true }));
+    return window.downloadBlob(exportUrl(ids), fname).catch(e => fireToast(e.message || 'Export failed', { danger: true }));
   };
 
   const bulkDeactivate = async (ids, { alsoExport } = {}) => {
     if (!ids.length) return;
-    if (!window.confirm(`${alsoExport ? 'Export then remove' : 'Remove'} ${ids.length} SKU${ids.length === 1 ? '' : 's'}? They are retired (hidden), so existing quotations keep working.`)) return;
+    const whole = ids.length === skus.length ? ' — that\'s every item shown' : '';
+    if (!window.confirm(`${alsoExport ? 'Export, then remove' : 'Remove'} the ${ids.length} selected SKU${ids.length === 1 ? '' : 's'}${whole}? They are retired (hidden), so existing quotations keep working.`)) return;
     setBusy(true);
     try {
-      if (alsoExport) doExport(ids);
+      if (alsoExport) await doExport(ids);   // finish the download BEFORE retiring
       const r = await window.api.post('/product-skus/bulk-deactivate', { ids });
       fireToast(`Removed ${r.deactivated} SKU${r.deactivated === 1 ? '' : 's'}`);
       setSelected(new Set());
@@ -147,12 +153,13 @@ function PricelistApp() {
 
   const clearBook = async () => {
     if (!bookId) { fireToast('Pick a price book first.', { danger: true }); return; }
-    if (!window.confirm(`Download a backup of "${bookName()}" and then retire ALL its ${skus.length}+ SKUs? Existing quotations keep their snapshots.`)) return;
+    if (!window.confirm(`Back up to Excel, then retire ALL SKUs in the WHOLE book "${bookName()}"? Existing quotations keep their snapshots.`)) return;
     setBusy(true);
     try {
-      doExport(null); // full-book backup first
+      await doExport(null); // full-book backup first — awaited so it can't come out empty
       const all = await window.api.get('/product-skus?' + new URLSearchParams({ price_book_id: String(bookId) }).toString());
       const ids = all.map(s => s.id);
+      if (!ids.length) { fireToast('Nothing to clear.'); return; }
       const r = await window.api.post('/product-skus/bulk-deactivate', { ids });
       fireToast(`Backed up & retired ${r.deactivated} SKUs`);
       setSelected(new Set());
@@ -236,12 +243,14 @@ function PricelistApp() {
               </select>
               <span style={{ flex: 1 }}></span>
               <span style={{ fontSize: 12, color: 'var(--fg-secondary)' }}>{skus.length} SKUs</span>
+              <button onClick={() => setParamsOpen(true)} title="Edit the pricing parameters (rates, tiers, exchange rate)"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 7, cursor: 'pointer', background: 'var(--bg-surface)', color: 'var(--fg-primary)', border: '1px solid var(--border-default)', fontSize: 13, fontWeight: 600 }}>⚙ Parameters</button>
               <button onClick={() => bookId ? setSkuModal({ mode: 'add', row: null }) : fireToast('Pick a price book first.', { danger: true })}
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 7, cursor: 'pointer', background: 'var(--bg-surface)', color: 'var(--img-orange-700, #B8680E)', border: '1px solid var(--img-orange)', fontSize: 13, fontWeight: 600 }}>+ Add SKU</button>
-              <button onClick={() => doExport(null)} title="Download this price book as Excel"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 7, cursor: 'pointer', background: 'var(--bg-surface)', color: 'var(--fg-primary)', border: '1px solid var(--border-default)', fontSize: 13, fontWeight: 600 }}>⬇ Export</button>
-              <button onClick={clearBook} disabled={busy} title="Back up to Excel, then retire every SKU in this book"
-                style={{ padding: '6px 10px', borderRadius: 7, cursor: busy ? 'default' : 'pointer', background: 'var(--bg-surface)', color: 'var(--color-danger)', border: '1px solid var(--border-default)', fontSize: 12.5, fontWeight: 600 }}>Export & clear</button>
+              <button onClick={() => doExport(null)} title="Download the entire price book as Excel"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 7, cursor: 'pointer', background: 'var(--bg-surface)', color: 'var(--fg-primary)', border: '1px solid var(--border-default)', fontSize: 13, fontWeight: 600 }}>⬇ Export whole book</button>
+              <button onClick={clearBook} disabled={busy} title="Back up to Excel, then retire EVERY SKU in this whole book"
+                style={{ padding: '6px 10px', borderRadius: 7, cursor: busy ? 'default' : 'pointer', background: 'var(--color-danger-bg)', color: 'var(--color-danger)', border: '1px solid var(--color-danger)', fontSize: 12.5, fontWeight: 700 }}>🗑 Clear whole book</button>
               {/* Upload with a merge/replace mode toggle */}
               <div style={{ display: 'inline-flex', alignItems: 'stretch', borderRadius: 7, overflow: 'hidden', border: '1px solid var(--img-orange)' }}>
                 <select value={uploadMode} onChange={e => setUploadMode(e.target.value)} title="How an upload treats items not in the sheet"
@@ -260,13 +269,17 @@ function PricelistApp() {
 
             {/* Selection action bar — appears when rows are ticked */}
             {selected.size > 0 && (
-              <div style={{ padding: '8px 24px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--img-orange-50)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--img-orange-700)' }}>{selected.size} selected</span>
+              <div style={{ padding: '8px 24px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--img-green-50, #ECF8F1)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--img-green-700)' }}>
+                  {selected.size} of {skus.length} shown selected
+                  {selected.size === skus.length && <span style={{ color: 'var(--color-danger)', marginLeft: 6 }}>— that’s every item shown</span>}
+                </span>
                 <span style={{ flex: 1 }}></span>
+                <span style={{ fontSize: 11, color: 'var(--fg-tertiary)', marginRight: 2 }}>These act on the {selected.size} selected only:</span>
                 <button onClick={() => doExport(selectedIds())} style={selBtn}>⬇ Export selected</button>
-                <button onClick={() => setBulkOpen(true)} style={selBtn}>✎ Bulk edit</button>
-                <button onClick={() => bulkDeactivate(selectedIds(), { alsoExport: true })} disabled={busy} style={selBtn}>Export &amp; delete</button>
-                <button onClick={() => bulkDeactivate(selectedIds())} disabled={busy} style={{ ...selBtn, color: 'var(--color-danger)', borderColor: 'var(--color-danger)' }}>Delete selected</button>
+                <button onClick={() => setBulkOpen(true)} style={selBtn}>✎ Bulk edit selected</button>
+                <button onClick={() => bulkDeactivate(selectedIds(), { alsoExport: true })} disabled={busy} style={{ ...selBtn, color: 'var(--color-danger)', borderColor: 'var(--color-danger)' }}>Export &amp; remove selected</button>
+                <button onClick={() => bulkDeactivate(selectedIds())} disabled={busy} style={{ ...selBtn, color: 'var(--color-danger)', borderColor: 'var(--color-danger)' }}>Remove selected</button>
                 <button onClick={() => setSelected(new Set())} style={{ ...selBtn, border: 'none', background: 'transparent' }}>Clear</button>
               </div>
             )}
@@ -302,18 +315,22 @@ function PricelistApp() {
                   textTransform: 'uppercase', letterSpacing: '0.04em',
                   borderBottom: '1px solid var(--border-subtle)',
                 }}>
-                  <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-                    <input type="checkbox" checked={allShownSelected} onChange={toggleSelAll} title="Select all shown" style={{ cursor: 'pointer' }} />
+                  <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1 }}>
+                    <input type="checkbox" checked={allShownSelected} onChange={toggleSelAll} title="Select ALL shown rows" style={{ cursor: 'pointer' }} />
+                    <span style={{ fontSize: 8, marginTop: 2 }}>ALL</span>
                   </span>
                   <span>Category</span><span>ERP</span><span>Model</span><span>Description</span>
                   {canSeeCosts && <span style={{ textAlign: 'right' }}>Cost JOD</span>}
                   <span style={{ textAlign: 'right' }}>List price</span>
-                  {canSeeCosts && <span style={{ textAlign: 'right' }}>GP@25%</span>}
+                  {canSeeCosts && <span style={{ textAlign: 'right' }}>GP@List</span>}
                   <span style={{ textAlign: 'right' }}>Actions</span>
                 </div>
                 {skus.map(s => {
-                  const ns25 = s.list_price * 0.75;
-                  const gp25 = canSeeCosts && s.cost_jod ? (ns25 - s.cost_jod) / ns25 : null;
+                  // GP @ list (0% discount). GREE rows carry gp_list from the API; others fall back.
+                  const gpList = s.gp_list != null ? s.gp_list
+                    : (canSeeCosts && s.cost_jod && s.list_price ? (s.list_price - s.cost_jod) / s.list_price : null);
+                  const isGree = !!s.item_id;
+                  const phased = /phased/i.test(s.status || '');
                   return (
                     <div key={s.id} style={{
                       display: 'grid',
@@ -332,12 +349,17 @@ function PricelistApp() {
                         <span style={{ color: 'var(--fg-secondary)' }}>{s.category_l3 || s.category}</span>
                       </span>
                       <span className="t-mono" style={{ fontSize: 10.5, color: 'var(--fg-tertiary)' }}>{s.erp_code || '—'}</span>
-                      <span className="t-mono" style={{ fontWeight: 600 }}>{s.model}</span>
+                      <span className="t-mono" style={{ fontWeight: 600 }}>
+                        {s.model}
+                        {phased && <span style={{ marginLeft: 6, fontSize: 8.5, fontWeight: 700, color: 'var(--color-danger)', border: '1px solid var(--color-danger)', borderRadius: 4, padding: '0 4px', verticalAlign: 'middle' }}>PHASED OUT</span>}
+                      </span>
                       <span style={{ color: 'var(--fg-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={s.description}>{s.description}</span>
-                      {canSeeCosts && <span className="t-num" style={{ textAlign: 'right', color: 'var(--fg-secondary)' }}>{(s.cost_jod || 0).toLocaleString()}</span>}
+                      {canSeeCosts && <span className="t-num" style={{ textAlign: 'right', color: 'var(--fg-secondary)' }}>{((isGree ? s.cost_inclusive : s.cost_jod) || 0).toLocaleString()}</span>}
                       <span className="t-num" style={{ textAlign: 'right', fontWeight: 700 }}>{(s.list_price || 0).toLocaleString()}</span>
-                      {canSeeCosts && <span className="t-num" style={{ textAlign: 'right', color: gp25 != null ? (gp25 < 0.15 ? '#B0241D' : 'var(--img-green-700)') : 'var(--fg-tertiary)' }}>{gp25 != null ? `${(gp25 * 100).toFixed(1)}%` : '—'}</span>}
+                      {canSeeCosts && <span className="t-num" style={{ textAlign: 'right', color: gpList != null ? (gpList < 0.15 ? '#B0241D' : 'var(--img-green-700)') : 'var(--fg-tertiary)' }}>{gpList != null ? `${(gpList * 100).toFixed(1)}%` : '—'}</span>}
                       <span style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                        {isGree && canSeeCosts && <button onClick={() => setBuildupId(s.id)} title="Cost build-up & GP tiers"
+                          style={{ width: 26, height: 26, border: '1px solid var(--border-default)', borderRadius: 5, background: 'var(--bg-surface)', cursor: 'pointer', fontSize: 12 }}>📊</button>}
                         <button onClick={() => setSkuModal({ mode: 'edit', row: s })} title="Edit"
                           style={{ width: 26, height: 26, border: '1px solid var(--border-default)', borderRadius: 5, background: 'var(--bg-surface)', cursor: 'pointer', fontSize: 12 }}>✎</button>
                         <button onClick={async () => {
@@ -410,6 +432,9 @@ function PricelistApp() {
           }}
         />
       )}
+
+      {paramsOpen && <ParametersModal onClose={() => setParamsOpen(false)} onSaved={(n) => { fireToast(`Saved — recomputed ${n} items`); reload(); }} fireToast={fireToast} />}
+      {buildupId != null && <BuildUpModal skuId={buildupId} onClose={() => setBuildupId(null)} onChanged={() => reload()} fireToast={fireToast} />}
 
       <window.Toast toast={toast} onClose={() => setToast(null)} />
     </>
@@ -621,6 +646,119 @@ function DeactivateModal({ sku, loading, usage, onClose, onConfirm }) {
         </div>
       </div>
     </div>
+  );
+}
+
+// ── GREE pricing parameters editor ──────────────────────────────────────────
+function ParametersModal({ onClose, onSaved, fireToast }) {
+  const { ModalShell, Btn } = window.PopupShell;
+  const [rows, setRows] = useState(null);
+  const [edited, setEdited] = useState({});
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { window.api.get('/pricing-params').then(setRows).catch(() => setRows([])); }, []);
+  const setVal = (code, v) => setEdited(e => ({ ...e, [code]: v }));
+  const groups = useMemo(() => { const g = {}; (rows || []).forEach(r => (g[r.category] = g[r.category] || []).push(r)); return g; }, [rows]);
+  const dirty = Object.keys(edited).filter(code => { const r = (rows || []).find(x => x.code === code); return r && String(edited[code]) !== String(r.value); });
+  const save = async () => {
+    if (!dirty.length) { onClose(); return; }
+    setSaving(true);
+    try { const r = await window.api.put('/pricing-params', { updates: dirty.map(code => ({ code, value: Number(edited[code]) || 0 })) }); onSaved(r.recomputed); onClose(); }
+    catch (e) { fireToast('Failed: ' + e.message, { danger: true }); } finally { setSaving(false); }
+  };
+  return (
+    <ModalShell title="Pricing parameters" subtitle="Global + per-category inputs. Saving recomputes every GREE item." width={560} onClose={onClose}
+      footer={<><Btn kind="ghost" onClick={onClose}>Cancel</Btn><Btn kind="primary" disabled={saving || !dirty.length} onClick={save}>{saving ? 'Saving…' : `Save${dirty.length ? ` (${dirty.length})` : ''}`}</Btn></>}>
+      <div style={{ padding: 20, maxHeight: '62vh', overflowY: 'auto' }}>
+        {rows == null ? <div style={{ color: 'var(--fg-tertiary)' }}>Loading…</div> :
+          Object.keys(groups).map(cat => (
+            <div key={cat} style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: 'var(--img-orange-700)', marginBottom: 8 }}>{cat}</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: '6px 12px', alignItems: 'center' }}>
+                {groups[cat].map(r => {
+                  const val = edited[r.code] !== undefined ? edited[r.code] : r.value;
+                  return <React.Fragment key={r.code}>
+                    <label style={{ fontSize: 12.5, color: 'var(--fg-secondary)' }}>{r.label || r.code} <span className="t-mono" style={{ fontSize: 10, color: 'var(--fg-tertiary)' }}>({r.code})</span></label>
+                    <input type="number" step="any" value={val} onChange={e => setVal(r.code, e.target.value)}
+                      style={{ height: 30, padding: '0 8px', border: '1px solid var(--border-default)', borderRadius: 6, fontSize: 12.5, textAlign: 'right', background: 'var(--bg-surface)' }} />
+                  </React.Fragment>;
+                })}
+              </div>
+            </div>
+          ))}
+      </div>
+    </ModalShell>
+  );
+}
+
+function GpChip({ label, v }) {
+  const c = v == null ? 'var(--fg-tertiary)' : (v < 0.15 ? 'var(--color-danger)' : 'var(--img-green-700)');
+  return (
+    <div style={{ padding: '6px 12px', border: `1px solid ${c}`, borderRadius: 8, textAlign: 'center', minWidth: 62 }}>
+      <div className="t-num" style={{ fontWeight: 700, color: c }}>{v == null ? '—' : `${(v * 100).toFixed(1)}%`}</div>
+      <div style={{ fontSize: 10, color: 'var(--fg-tertiary)' }}>{label}</div>
+    </div>
+  );
+}
+
+// ── Cost build-up + GP tiers, with editable Price 1 and a target-GP suggester ──
+function BuildUpModal({ skuId, onClose, onChanged, fireToast }) {
+  const { ModalShell, Btn } = window.PopupShell;
+  const [d, setD] = useState(null);
+  const [p1, setP1] = useState('');
+  const [targetGP, setTargetGP] = useState('');
+  const [saving, setSaving] = useState(false);
+  const money = n => n == null ? '—' : Number(n).toLocaleString();
+  const load = () => window.api.get(`/product-skus/${skuId}/buildup`).then(x => { setD(x); setP1(x.prices.price1 != null ? x.prices.price1 : ''); }).catch(e => fireToast('Failed: ' + e.message, { danger: true }));
+  useEffect(() => { load(); }, [skuId]);
+  const savePrice = async () => {
+    setSaving(true);
+    try { await window.api.put(`/product-skus/${skuId}`, { price1_inclusive: p1 === '' ? null : Number(p1) }); await load(); onChanged && onChanged(); fireToast('Price 1 updated'); }
+    catch (e) { fireToast('Failed: ' + e.message, { danger: true }); } finally { setSaving(false); }
+  };
+  const suggest = () => {
+    if (!d) return; const g = (Number(targetGP) || 0) / 100; const cost = d.costs.inclusive || 0; const step = d.round_step || 5;
+    if (cost <= 0 || g >= 1) { fireToast('Enter a target GP below 100%.', { danger: true }); return; }
+    setP1(Math.ceil((cost / (1 - g)) / step) * step);
+  };
+  return (
+    <ModalShell title={`Cost build-up${d ? ' · ' + d.category : ''}`} width={520} onClose={onClose}
+      footer={<Btn kind="ghost" onClick={onClose}>Close</Btn>}>
+      <div style={{ padding: 20 }}>
+        {!d ? <div style={{ color: 'var(--fg-tertiary)' }}>Loading…</div> : <>
+          <div style={{ fontSize: 12, color: 'var(--fg-secondary)', marginBottom: 10 }}>FOB Net: <b>${money(d.fob_net_usd)}</b> × FX {d.fx}</div>
+          <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 8, overflow: 'hidden', marginBottom: 14 }}>
+            {d.steps.map((s, i) => (
+              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', fontSize: 12.5, borderTop: i ? '1px solid var(--border-subtle)' : 'none' }}>
+                <span style={{ color: 'var(--fg-secondary)' }}>{s.label}</span><span className="t-num" style={{ fontWeight: 600 }}>{money(s.value)}</span></div>
+            ))}
+            {d.costs.adders > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', fontSize: 12.5, borderTop: '1px solid var(--border-subtle)', color: 'var(--fg-secondary)' }}><span>+ U-Match adders (copper + install)</span><span className="t-num">{money(d.costs.adders)}</span></div>}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 14 }}>
+            {[['Cost Inclusive', d.costs.inclusive], ['Cost STax-Exempt', d.costs.stax_exempt], ['Cost Exempted', d.costs.exempted]].map(([l, v]) => (
+              <div key={l} style={{ padding: 8, border: '1px solid var(--border-subtle)', borderRadius: 8, textAlign: 'center' }}>
+                <div className="t-num" style={{ fontWeight: 700, fontSize: 15 }}>{money(v)}</div><div style={{ fontSize: 10, color: 'var(--fg-tertiary)' }}>{l}</div></div>
+            ))}
+          </div>
+          <div style={{ background: 'var(--neutral-25)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: 12, marginBottom: 14 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, fontWeight: 600, color: 'var(--fg-secondary)' }}>PRICE 1 (INCLUSIVE)
+                <input type="number" value={p1} onChange={e => setP1(e.target.value)} style={{ height: 32, width: 130, padding: '0 8px', border: '1px solid var(--border-default)', borderRadius: 6, textAlign: 'right' }} /></label>
+              <Btn kind="primary" disabled={saving} onClick={savePrice}>{saving ? 'Saving…' : 'Save price'}</Btn>
+              <span style={{ flex: 1 }}></span>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, fontWeight: 600, color: 'var(--fg-secondary)' }}>TARGET GP %
+                <input type="number" value={targetGP} onChange={e => setTargetGP(e.target.value)} placeholder="e.g. 45" style={{ height: 32, width: 90, padding: '0 8px', border: '1px solid var(--border-default)', borderRadius: 6, textAlign: 'right' }} /></label>
+              <Btn kind="secondary" onClick={suggest}>Suggest</Btn>
+            </div>
+            <div style={{ fontSize: 11.5, color: 'var(--fg-tertiary)', marginTop: 8 }}>Price 2 (STax-Exempt): <b>{money(d.prices.price2)}</b> · Price 3 (Exempted): <b>{money(d.prices.price3)}</b></div>
+          </div>
+          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--fg-tertiary)', marginBottom: 6 }}>Gross profit at each discount tier</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <GpChip label="List (0%)" v={d.gp.gp_list} />
+            {(d.gp.gp_tiers || []).map((t, i) => <GpChip key={i} label={`${(t.tier * 100).toFixed(0)}%`} v={t.gp} />)}
+          </div>
+        </>}
+      </div>
+    </ModalShell>
   );
 }
 
