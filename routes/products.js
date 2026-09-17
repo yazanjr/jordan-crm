@@ -50,9 +50,12 @@ function catParamsFor(byCategory, category) {
   };
 }
 // The core (non-deletable) rate suffixes every category must keep for the engine.
+// Category codes are PREFIX_SUFFIX (one underscore); the loader keys by the suffix
+// (last '_' segment), so suffixes stay single-token — TGP = target GP%, not TARGET_GP.
 const CORE_PARAM_SUFFIXES = ['SHIP', 'CUST', 'EXTRA', 'TAX'];
-const KNOWN_PARAM_SUFFIXES = ['SHIP', 'CUST', 'EXTRA', 'TAX', 'COPPER', 'INSTALL', 'TARGET_GP'];
+const KNOWN_PARAM_SUFFIXES = ['SHIP', 'CUST', 'EXTRA', 'TAX', 'COPPER', 'INSTALL', 'TGP'];
 const isTierSuffix = (suffix) => /^T\d+$/.test(suffix);
+const suffixOf = (code) => String(code).split('_').pop();
 // Recompute + store one item's costs/prices from its inputs. Mirrors cost_jod and
 // list_price so all existing (non-GREE-aware) code keeps working.
 function recomputeItemById(id, cache) {
