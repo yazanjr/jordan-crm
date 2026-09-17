@@ -45,9 +45,14 @@ function catParamsFor(byCategory, category) {
   const p = byCategory[_catKey(category)] || {};
   return {
     params: { ship: p.SHIP, cust: p.CUST, extra: p.EXTRA, tax: p.TAX, copper: p.COPPER, install: p.INSTALL },
-    tiers: ['T1', 'T2', 'T3', 'T4'].map(t => p[t]).filter(v => v != null),
+    // All T<n> tiers in numeric order — supports adding tiers beyond T4 (T5, T6…).
+    tiers: Object.keys(p).filter(k => /^T\d+$/.test(k)).sort((a, b) => +a.slice(1) - +b.slice(1)).map(k => p[k]).filter(v => v != null),
   };
 }
+// The core (non-deletable) rate suffixes every category must keep for the engine.
+const CORE_PARAM_SUFFIXES = ['SHIP', 'CUST', 'EXTRA', 'TAX'];
+const KNOWN_PARAM_SUFFIXES = ['SHIP', 'CUST', 'EXTRA', 'TAX', 'COPPER', 'INSTALL', 'TARGET_GP'];
+const isTierSuffix = (suffix) => /^T\d+$/.test(suffix);
 // Recompute + store one item's costs/prices from its inputs. Mirrors cost_jod and
 // list_price so all existing (non-GREE-aware) code keeps working.
 function recomputeItemById(id, cache) {
