@@ -48,11 +48,16 @@ function computePrices(price1, globals = {}) {
 }
 
 // GP @tier = (Price1×(1−tier) − CostInclusive) / (Price1×(1−tier)). tiers = [0.25, 0.40, ...].
+// Also returns the actual selling price at each discount (Price1 × (1−tier), rounded).
 function computeGP(price1, costInclusive, tiers = []) {
   const p1 = Number(price1) || 0;
   const cost = Number(costInclusive) || 0;
   const at = (d) => { const base = p1 * (1 - d); return base > 0 ? +((base - cost) / base).toFixed(4) : null; };
-  return { gp_list: at(0), gp_tiers: (tiers || []).map(t => ({ tier: t, gp: at(t) })) };
+  const priceAt = (d) => p1 ? r0(p1 * (1 - d)) : null;
+  return {
+    gp_list: at(0), price_list: priceAt(0),
+    gp_tiers: (tiers || []).map(t => ({ tier: t, gp: at(t), price: priceAt(t) })),
+  };
 }
 
 // Back-solve a Price 1 for a target GP% at list: GP=(P−cost)/P ⇒ P = cost/(1−GP), rounded up to the price step.

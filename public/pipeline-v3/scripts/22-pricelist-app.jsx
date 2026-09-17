@@ -65,6 +65,18 @@ function PricelistApp() {
   }, [brandId, books, bookId]);
   const booksForBrand = books.filter(b => b.brand_id === brandId);
 
+  // When the active book actually changes (manual switch, brand switch, or the
+  // auto-select above), clear the group/family/search filters — otherwise a
+  // filter from the previous book silently applies to the new one and can hide
+  // all its rows. A ref guards against firing on unrelated re-renders / mount.
+  const prevBookRef = React.useRef(bookId);
+  useEffect(() => {
+    if (prevBookRef.current !== bookId) {
+      prevBookRef.current = bookId;
+      setGroupFilter(''); setFamilyFilter(''); setSearch('');
+    }
+  }, [bookId]);
+
   const reload = React.useCallback(async () => {
     if (!bookId) { setSkus([]); setCategories([]); setCategoryTree([]); return; }
     try {
@@ -95,18 +107,18 @@ function PricelistApp() {
 
   const handleUpload = async (file) => {
     if (!file) return;
-    if (!bookId) { fireToast('Pick a price book first.', { danger: true }); return; }
-    if (uploadMode === 'replace' && !window.confirm('Replace mode wipes this whole price book and loads only what is in the sheet. Continue?')) return;
+    if (uploadMode === 'replace' && !window.confirm('Replace mode hides every item in the GREE book that is NOT in your sheet, then loads the sheet. Continue?')) return;
     setUploading(true);
     try {
       const fd = new FormData();
       fd.append('file', file);
-      fd.append('price_book_id', String(bookId));
       fd.append('mode', uploadMode);
-      const data = await window.uploadForm('/api/pricelist-versions/upload', fd);
+      // New computing importer: reads Item ID/Model/Category/Section/FOB (+ optional
+      // Price 1) and CALCULATES all costs & derived prices from the parameters.
+      const data = await window.uploadForm('/api/pricing/import', fd);
       const msg = data.mode === 'replace'
-        ? `Replaced book — ${data.inserted} SKUs loaded (${data.retired} retired, ${data.skipped} skipped)`
-        : `Updated ${data.updated} · added ${data.inserted}${data.skipped ? ` · ${data.skipped} skipped` : ''}`;
+        ? `Replaced — ${data.items_inserted} added, ${data.items_updated} updated, ${data.retired} hidden${data.skipped ? `, ${data.skipped} skipped` : ''}`
+        : `Added ${data.items_inserted} · updated ${data.items_updated}${data.skipped ? ` · ${data.skipped} skipped` : ''} (prices computed)`;
       fireToast(msg);
       reload();
     } catch (e) {
@@ -115,6 +127,9 @@ function PricelistApp() {
       setUploading(false);
     }
   };
+  const downloadTemplate = () =>
+    window.downloadBlob('/api/pricing/import-template', 'GREE-pricelist-upload-template.xlsx')
+      .catch(e => fireToast(e.message || 'Download failed', { danger: true }));
 
   // Build the export URL for the current book, honoring active filters. Pass an
   // array of ids to export only the selected rows.
@@ -251,6 +266,8 @@ function PricelistApp() {
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 7, cursor: 'pointer', background: 'var(--bg-surface)', color: 'var(--fg-primary)', border: '1px solid var(--border-default)', fontSize: 13, fontWeight: 600 }}>⬇ Export whole book</button>
               <button onClick={clearBook} disabled={busy} title="Back up to Excel, then retire EVERY SKU in this whole book"
                 style={{ padding: '6px 10px', borderRadius: 7, cursor: busy ? 'default' : 'pointer', background: 'var(--color-danger-bg)', color: 'var(--color-danger)', border: '1px solid var(--color-danger)', fontSize: 12.5, fontWeight: 700 }}>🗑 Clear whole book</button>
+              <button onClick={downloadTemplate} title="Download the blank Excel template to fill in and upload"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 7, cursor: 'pointer', background: 'var(--bg-surface)', color: 'var(--fg-primary)', border: '1px solid var(--border-default)', fontSize: 13, fontWeight: 600 }}>⬇ Template</button>
               {/* Upload with a merge/replace mode toggle */}
               <div style={{ display: 'inline-flex', alignItems: 'stretch', borderRadius: 7, overflow: 'hidden', border: '1px solid var(--img-orange)' }}>
                 <select value={uploadMode} onChange={e => setUploadMode(e.target.value)} title="How an upload treats items not in the sheet"
@@ -690,12 +707,13 @@ function ParametersModal({ onClose, onSaved, fireToast }) {
   );
 }
 
-function GpChip({ label, v }) {
+function GpChip({ label, v, price }) {
   const c = v == null ? 'var(--fg-tertiary)' : (v < 0.15 ? 'var(--color-danger)' : 'var(--img-green-700)');
   return (
-    <div style={{ padding: '6px 12px', border: `1px solid ${c}`, borderRadius: 8, textAlign: 'center', minWidth: 62 }}>
-      <div className="t-num" style={{ fontWeight: 700, color: c }}>{v == null ? '—' : `${(v * 100).toFixed(1)}%`}</div>
-      <div style={{ fontSize: 10, color: 'var(--fg-tertiary)' }}>{label}</div>
+    <div style={{ padding: '6px 12px', border: `1px solid ${c}`, borderRadius: 8, textAlign: 'center', minWidth: 78 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--fg-tertiary)' }}>{label}</div>
+      {price != null && <div className="t-num" style={{ fontWeight: 700, fontSize: 14, color: 'var(--fg-primary)' }}>{Number(price).toLocaleString()}</div>}
+      <div className="t-num" style={{ fontWeight: 700, fontSize: 11.5, color: c }}>GP {v == null ? '—' : `${(v * 100).toFixed(1)}%`}</div>
     </div>
   );
 }
@@ -751,10 +769,10 @@ function BuildUpModal({ skuId, onClose, onChanged, fireToast }) {
             </div>
             <div style={{ fontSize: 11.5, color: 'var(--fg-tertiary)', marginTop: 8 }}>Price 2 (STax-Exempt): <b>{money(d.prices.price2)}</b> · Price 3 (Exempted): <b>{money(d.prices.price3)}</b></div>
           </div>
-          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--fg-tertiary)', marginBottom: 6 }}>Gross profit at each discount tier</div>
+          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--fg-tertiary)', marginBottom: 6 }}>Selling price &amp; gross profit at each discount</div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <GpChip label="List (0%)" v={d.gp.gp_list} />
-            {(d.gp.gp_tiers || []).map((t, i) => <GpChip key={i} label={`${(t.tier * 100).toFixed(0)}%`} v={t.gp} />)}
+            <GpChip label="List (0%)" v={d.gp.gp_list} price={d.gp.price_list != null ? d.gp.price_list : d.prices.price1} />
+            {(d.gp.gp_tiers || []).map((t, i) => <GpChip key={i} label={`−${(t.tier * 100).toFixed(0)}%`} v={t.gp} price={t.price} />)}
           </div>
         </>}
       </div>

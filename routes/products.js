@@ -693,6 +693,48 @@ router.get('/product-skus/:id/buildup', (req, res) => {
   });
 });
 
+// GET /api/pricing/import-template — download a clean, minimal upload template.
+// The new pricelist only needs the item's identity + FOB; costs & prices are
+// COMPUTED by the engine. Price 1 is optional (set later per item, or here in bulk).
+router.get('/pricing/import-template', (req, res) => {
+  const headers = ['Item ID', 'Model', 'Description', 'Category', 'Section', 'FOB Net (USD)', 'Price 1 Inclusive (JOD)'];
+  const example = [
+    ['UMP-01', 'GMV-ND22PLS/A-T', '1-way cassette 2.2kW', 'U-Match Projects', '1-way Cassette', 392, ''],
+    ['UMP-02', 'GMV-ND28PLS/A-T', '1-way cassette 2.8kW', 'U-Match Projects', '1-way Cassette', 430, ''],
+  ];
+  const itemsWs = XLSX.utils.aoa_to_sheet([headers, ...example]);
+  itemsWs['!cols'] = [{ wch: 12 }, { wch: 22 }, { wch: 30 }, { wch: 20 }, { wch: 18 }, { wch: 14 }, { wch: 20 }];
+
+  const help = [
+    ['GREE PRICELIST — UPLOAD TEMPLATE'],
+    [''],
+    ['Fill the "Item Master" sheet. The system computes every cost and derived price for you.'],
+    ['You only provide what is unique to each item:'],
+    [''],
+    ['Column', 'Required?', 'What it is'],
+    ['Item ID', 'YES', 'The unique code for the item. Used to find & update it later. Keep it stable.'],
+    ['Model', 'YES', 'The item name / model number shown in the pricelist.'],
+    ['Description', 'optional', 'A short description.'],
+    ['Category', 'YES', 'Drives the pricing parameters (ship/customs/tax/tiers). Must match a category in Parameters.'],
+    ['Section', 'optional', 'Sub-group used to filter/find the item in the pricelist.'],
+    ['FOB Net (USD)', 'YES', 'The factory FOB price in USD. Everything (cost, selling price options) is built from this.'],
+    ['Price 1 Inclusive (JOD)', 'optional', 'The selling price. Leave blank to set it later in the app (manually or from a target GP%).'],
+    [''],
+    ['Costs (Inclusive / STax-Exempt / Exempted), Price 2, Price 3 and GP% are ALL calculated — do not add them here.'],
+    ['To change the rates used in the calculation, use the ⚙ Parameters button in the Pricelist page.'],
+  ];
+  const helpWs = XLSX.utils.aoa_to_sheet(help);
+  helpWs['!cols'] = [{ wch: 26 }, { wch: 12 }, { wch: 80 }];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, itemsWs, 'Item Master');
+  XLSX.utils.book_append_sheet(wb, helpWs, 'How to use');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="GREE-pricelist-upload-template.xlsx"');
+  res.send(buf);
+});
+
 // POST /api/pricing/import — import the GREE workbook (Parameters + Item Master sheets).
 const uploadsDir2 = path.join(process.env.UPLOADS_PATH || './uploads', 'pricing');
 fs.mkdirSync(uploadsDir2, { recursive: true });
@@ -758,11 +800,14 @@ router.post('/pricing/import', requirePM, pricingUpload.single('file'), (req, re
        description=?, capacity=?, unit=?, status=?, active=?, fob_net_usd=?, price1_inclusive=?, price_iraq=?, list_price=?, updated_at=datetime('now')
       WHERE id=?`);
 
+    const mode = String(req.body.mode || 'merge').toLowerCase() === 'replace' ? 'replace' : 'merge';
+    const seenItemIds = [];
     let inserted = 0, updated = 0, skipped = 0;
     for (const r of irows) {
       const itemId = cell(r, 'Item ID');
       const model = cell(r, 'Model');
       if (!itemId || !model) { skipped++; continue; }
+      seenItemIds.push(String(itemId).trim());
       const category = cell(r, 'Category');
       const section = cell(r, 'Section');
       const price1 = numOrNull(cell(r, 'Price 1 Inclusive (JOD)', 'Price 1', 'Price 1 Inclusive'));
@@ -786,8 +831,16 @@ router.post('/pricing/import', requirePM, pricingUpload.single('file'), (req, re
       else { id = insItem.run(...vals).lastInsertRowid; inserted++; }
       recomputeItemById(id, pp);   // compute costs/prices from FOB + Price1
     }
+    // Replace mode: retire (hide) any item in this book that wasn't in the sheet.
+    let retired = 0;
+    if (mode === 'replace') {
+      const existing = db.prepare('SELECT id, item_id FROM product_skus WHERE price_book_id = ? AND active = 1 AND item_id IS NOT NULL').all(bookId);
+      const seen = new Set(seenItemIds);
+      const ret = db.prepare("UPDATE product_skus SET active = 0, updated_at = datetime('now') WHERE id = ?");
+      for (const row of existing) { if (!seen.has(row.item_id)) { ret.run(row.id); retired++; } }
+    }
     db.exec('COMMIT');
-    res.json({ ok: true, params_upserted: paramsUpserted, items_inserted: inserted, items_updated: updated, skipped, brand: brandName, price_book_id: bookId });
+    res.json({ ok: true, mode, params_upserted: paramsUpserted, items_inserted: inserted, items_updated: updated, retired, skipped, brand: brandName, price_book_id: bookId });
   } catch (e) {
     db.exec('ROLLBACK');
     res.status(500).json({ error: 'Import failed: ' + e.message });

@@ -1209,6 +1209,91 @@ router.get('/quotation-versions/:id/costing', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/quotation-versions/:id/discount-analysis
+//   The "Costing" answer for a whole quotation: at each discount tier, what is
+//   the gross profit (value + %)? And what is the MAX discount that still hits a
+//   target GP%? Uses the LIVE landed cost of each linked SKU (falls back to the
+//   cost snapshot saved on the line). PM/admin only — it exposes cost & margin.
+// ---------------------------------------------------------------------------
+router.get('/quotation-versions/:id/discount-analysis', (req, res) => {
+  if (!(req.user.can_view_costs === 1 || ['admin', 'product_manager'].includes(req.user.role))) {
+    return res.status(403).json({ error: 'Cost view requires product_manager or admin.' });
+  }
+  const q = db.prepare(`SELECT * FROM quotation_versions WHERE id = ?`).get(+req.params.id);
+  if (!q) return res.status(404).json({ error: 'Quotation not found.' });
+
+  const basis = ['inclusive', 'stax', 'exempted'].includes(req.query.basis) ? req.query.basis : 'inclusive';
+  const priceCol = { inclusive: 'price1_inclusive', stax: 'price2_stax_exempt', exempted: 'price3_exempted' }[basis];
+  const costCol  = { inclusive: 'cost_inclusive',   stax: 'cost_stax_exempt',   exempted: 'cost_exempted'   }[basis];
+
+  const targetGP = req.query.target_gp != null && req.query.target_gp !== ''
+    ? Math.max(0, Math.min(0.99, Number(req.query.target_gp) || 0)) : 0.15;
+  let tiers = String(req.query.tiers || '0,0.2,0.4,0.48').split(',')
+    .map(s => Number(s)).filter(n => Number.isFinite(n) && n >= 0 && n < 1);
+  if (!tiers.length) tiers = [0, 0.2, 0.4, 0.48];
+  tiers = [...new Set(tiers)].sort((a, b) => a - b);
+
+  const items = db.prepare(`
+    SELECT id, line_num, sku_id, category, model, description, qty, unit,
+           list_price, discount_pct, unit_price, subtotal, cost_snapshot
+    FROM quotation_line_items WHERE quotation_version_id = ? ORDER BY line_num
+  `).all(q.id);
+
+  let listTotal = 0, costTotal = 0, missingCost = 0, missingList = 0;
+  const lines = items.map(li => {
+    const qty = +li.qty || 0;
+    const sku = li.sku_id ? db.prepare(`SELECT ${priceCol} AS p, ${costCol} AS c, status FROM product_skus WHERE id = ?`).get(li.sku_id) : null;
+    // "What-if" basis: a GREE-linked line takes its SELLING price from the chosen
+    // tier (P1/P2/P3); a line without a tier price keeps its quoted list price.
+    // Legacy SKUs store unset tiers as 0 (not NULL), so only a price > 0 counts.
+    const tierPrice = sku && Number(sku.p) > 0 ? +sku.p : null;
+    const listUnit = tierPrice != null ? tierPrice : (li.list_price != null ? +li.list_price : null);
+    // Cost = LIVE landed cost for the chosen basis (> 0); fall back to the saved snapshot.
+    const liveCost = sku && Number(sku.c) > 0 ? +sku.c : null;
+    const costUnit = liveCost != null ? liveCost : (li.cost_snapshot != null ? +li.cost_snapshot : null);
+    if (listUnit == null) missingList++;
+    if (costUnit == null) missingCost++;
+    listTotal += qty * (listUnit || 0);
+    costTotal += qty * (costUnit || 0);
+    return {
+      line_num: li.line_num, model: li.model || li.description, category: li.category,
+      qty, list_unit: listUnit, cost_unit: costUnit,
+      phased_out: sku ? /phased/i.test(sku.status || '') : false,
+      has_cost: costUnit != null, has_list: listUnit != null,
+    };
+  });
+
+  listTotal = +listTotal.toFixed(2);
+  costTotal = +costTotal.toFixed(2);
+
+  const tierRows = tiers.map(d => {
+    const revenue = +(listTotal * (1 - d)).toFixed(2);
+    const gp_value = +(revenue - costTotal).toFixed(2);
+    const gp_pct = revenue > 0 ? +(gp_value / revenue).toFixed(4) : null;
+    return { discount: d, revenue, cost: costTotal, gp_value, gp_pct, ok: gp_pct != null && gp_pct >= targetGP };
+  });
+
+  // Max discount that still meets the target GP:  GP≥t ⇒ d ≤ 1 − cost/(list×(1−t)).
+  let suggested_max_discount = null;
+  if (listTotal > 0 && costTotal >= 0) {
+    const d = 1 - costTotal / (listTotal * (1 - targetGP));
+    suggested_max_discount = Math.max(0, +d.toFixed(4));
+    if (suggested_max_discount >= 1) suggested_max_discount = 0.99;
+  }
+
+  const parentReq = db.prepare(`SELECT id, opportunity_id FROM design_requests WHERE id = ?`).get(q.request_id);
+  const opp = parentReq ? db.prepare(`SELECT id, title FROM opportunities WHERE id = ?`).get(parentReq.opportunity_id) : null;
+
+  res.json({
+    quotation: { id: q.id, version: q.version_number, reference: q.reference, project_name: q.project_name,
+      city: q.city, brand: q.brand, review_status: q.review_status, total_value: q.total_value },
+    opp, basis, target_gp: targetGP,
+    base: { list_total: listTotal, cost_total: costTotal, lines_missing_cost: missingCost, lines_missing_list: missingList, line_count: lines.length },
+    tiers: tierRows, suggested_max_discount, lines,
+  });
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/quotation-versions/:id/export.doc
 //   Client-facing quotation as a Word (.doc) download. Any signed-in user who
 //   can see the deal may download it; cost/margin columns are never included.
