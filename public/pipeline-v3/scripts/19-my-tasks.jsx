@@ -335,7 +335,19 @@ function TaskDetail({ request, onClose, onStart, onSubmit }) {
   const { Close, Calendar, File: FileI, Attach, Check, ChevRight, Sparkle, Edit, Plus } = window.Icons;
   const r = request;
   const meta = window.DESIGN_STAGE_META[r.stage];
-  const urgentMeta = window.URGENCY_META[r.urgency] || {};
+  // Urgency is editable by the assigned designer/manager — local state for instant feedback.
+  const [urg, setUrg] = React.useState(r.urgency);
+  const [savingUrg, setSavingUrg] = React.useState(false);
+  const [fullForm, setFullForm] = React.useState(false);   // "View full form" toggle
+  React.useEffect(() => { setUrg(r.urgency); }, [r.urgency]);
+  const urgentMeta = window.URGENCY_META[urg] || {};
+  const changeUrgency = async (v) => {
+    if (v === urg) return;
+    const prev = urg; setUrg(v); setSavingUrg(true);
+    try { await window.api.patch(`/design-requests/${r.id}/urgency`, { urgency: v }); }
+    catch (e) { setUrg(prev); }
+    finally { setSavingUrg(false); }
+  };
   const dueDays = r.assignment?.dueDate ? window.daysUntil(r.assignment.dueDate) : null;
 
   // ── Quotation header (editable customer-facing fields). Defaults come from
@@ -495,7 +507,13 @@ function TaskDetail({ request, onClose, onStart, onSubmit }) {
               <div style={{ marginTop: 6, fontSize: 12.5, color: 'var(--fg-secondary)' }}>{r.account}</div>
               <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                 <span style={{ padding: '3px 9px', borderRadius: 999, fontSize: 11, fontWeight: 700, background: meta.bg, color: meta.fg, letterSpacing: '0.02em' }}>{meta.label}</span>
-                <span style={{ padding: '3px 9px', borderRadius: 999, fontSize: 11, fontWeight: 700, background: urgentMeta.bg, color: urgentMeta.fg }}>{r.urgency}</span>
+                <span title="Change urgency" style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', padding: '3px 9px', borderRadius: 999, fontSize: 11, fontWeight: 700, background: urgentMeta.bg, color: urgentMeta.fg, cursor: 'pointer' }}>
+                  {urg}{savingUrg ? ' …' : ' ▾'}
+                  <select value={urg} onChange={e => changeUrgency(e.target.value)} disabled={savingUrg}
+                    style={{ position: 'absolute', inset: 0, opacity: 0, width: '100%', height: '100%', cursor: 'pointer' }}>
+                    {['Standard', 'Urgent', 'Critical'].map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </span>
                 {r.assignment && <window.PriorityChip priority={r.assignment.priority} />}
               </div>
             </div>
@@ -591,7 +609,15 @@ function TaskDetail({ request, onClose, onStart, onSubmit }) {
 
           {r.formData && r.formData.form_type && window.DesignRequestSummary && (
             <Section title={`Form submission — ${r.formData.form_type === 'AC' ? 'AC / HVAC' : 'Heating'}`}>
-              <window.DesignRequestSummary form={r.formData} />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+                <button onClick={() => setFullForm(f => !f)} style={{
+                  fontSize: 11, fontWeight: 600, cursor: 'pointer', padding: '3px 10px', borderRadius: 6,
+                  border: '1px solid var(--img-orange)', background: fullForm ? 'var(--img-orange-50, #FFF7EE)' : 'transparent', color: 'var(--img-orange-700, #B8680E)',
+                }}>{fullForm ? '▾ Show summary' : '▸ View full form (all fields)'}</button>
+              </div>
+              {fullForm && window.DesignRequestFullForm
+                ? <window.DesignRequestFullForm form={r.formData} />
+                : <window.DesignRequestSummary form={r.formData} />}
             </Section>
           )}
 
@@ -619,19 +645,33 @@ function TaskDetail({ request, onClose, onStart, onSubmit }) {
           {/* Quotation submission form lives on a dedicated page now — opens
               in a wide single-column layout so input changes don't scroll the
               drawer around (Phase 8.1 fix). */}
-          {r.stage === 'In Progress' && (
-            <Section title={`Submit V${(r.quotations.length || 0) + 1}`}>
+          {r.stage === 'In Progress' && (() => {
+            const drafts = (r.quotations || []).filter(q => q.status === 'Draft');
+            return (
+            <Section title={drafts.length ? `Quotation drafts (${drafts.length})` : 'Build the quotation'}>
               <a href={`Quotation.html?requestId=${r.id}`} style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
                 padding: '14px 18px', borderRadius: 8, textDecoration: 'none',
                 background: 'var(--img-orange)', color: '#fff',
                 fontSize: 14, fontWeight: 700,
-              }}>Open quotation editor →</a>
+              }}>{drafts.length ? '+ New quotation draft →' : 'Open quotation editor →'}</a>
+              {drafts.map(q => (
+                <a key={q.id} href={`Quotation.html?requestId=${r.id}&versionId=${q.id}`} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 8,
+                  padding: '10px 14px', borderRadius: 8, textDecoration: 'none',
+                  border: '1px solid var(--img-orange)', background: 'var(--bg-surface)', color: 'var(--img-orange-700, #B8680E)',
+                  fontSize: 13, fontWeight: 700,
+                }}>
+                  <span>✎ Continue draft V{q.version}</span>
+                  <span className="t-num" style={{ fontWeight: 600, color: 'var(--fg-secondary)' }}>JOD {Number(q.totalValue || 0).toLocaleString()}</span>
+                </a>
+              ))}
               <div style={{ fontSize: 11.5, color: 'var(--fg-tertiary)', marginTop: 8, lineHeight: 1.45 }}>
-                The editor is a full-page form so you can fill the quotation header, pick line items, set the discount, and choose whether the release goes to Tender or Analysis. It opens in this tab; submitting brings you back here.
+                Build as many draft options as you like — each saves privately. Open one and press <b>Submit for review</b> to send that one. Drafts are only visible to you.
               </div>
             </Section>
-          )}
+            );
+          })()}
 
           {/* OLD in-drawer editor — kept commented for reference / fallback. */}
           {false && r.stage === 'In Progress' && (
@@ -817,7 +857,23 @@ function TaskDetail({ request, onClose, onStart, onSubmit }) {
                     background: q.status === 'Approved' ? 'var(--img-green-50)'   : q.status === 'Submitted' ? 'var(--stage-closing-bg)'  : 'var(--neutral-100)',
                     color:      q.status === 'Approved' ? 'var(--img-green-700)'  : q.status === 'Submitted' ? 'var(--img-green-700)'     : 'var(--fg-secondary)',
                   }}>{q.status}</span>
+                  <button onClick={() => window.open(`/api/quotation-versions/${q.id}/preview?as=${window.api.userId()}`, '_blank')}
+                    title="Open the full quotation in a big, clear window"
+                    style={{ fontSize: 10.5, fontWeight: 700, padding: '2px 9px', borderRadius: 4, border: '1px solid var(--img-green-700)', background: 'var(--bg-surface)', color: 'var(--img-green-700)', cursor: 'pointer' }}>⤢ Open</button>
+                  <button onClick={() => window.downloadBlob(`/api/quotation-versions/${q.id}/export.xlsm`, `${q.reference || 'quotation'}.xlsm`).catch(err => window.alert(err.message || 'Download failed'))}
+                    title="Download the IMG offer workbook filled with this quotation"
+                    style={{ fontSize: 10.5, fontWeight: 700, padding: '2px 9px', borderRadius: 4, border: '1px solid var(--img-green-700)', background: 'var(--img-green-700)', color: '#fff', cursor: 'pointer' }}>⬇ Excel</button>
+                  <a href={`Quotation.html?requestId=${r.id}&versionId=${q.id}`} target="_blank" rel="noopener"
+                    title="Open this quotation in the editor"
+                    style={{ fontSize: 10.5, fontWeight: 700, padding: '2px 9px', borderRadius: 4, border: '1px solid var(--border-default)', background: 'var(--bg-surface)', color: 'var(--fg-primary)', textDecoration: 'none' }}>✎ Editor</a>
                 </div>
+                {(q.files || []).filter(x => x && x.stored).length > 0 && (
+                  <div style={{ padding: '4px 8px 6px', display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 11 }}>
+                    {(q.files || []).map((x, i) => x && x.stored ? (
+                      <a key={i} href={`/api/quotation-versions/${q.id}/attachments/${i}?as=${window.api.userId()}`} target="_blank" rel="noopener"
+                        style={{ padding: '2px 8px', borderRadius: 999, background: 'var(--neutral-50)', border: '1px solid var(--border-subtle)', color: 'var(--fg-primary)', textDecoration: 'none' }}>📎 {x.name}</a>) : null)}
+                  </div>
+                )}
               ))}
             </Section>
           )}

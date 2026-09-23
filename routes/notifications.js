@@ -1,9 +1,12 @@
 const express = require('express');
 const db      = require('../database/db');
-const authMw  = require('../middleware/auth');
+const demoAuth = require('../middleware/demoAuth');
 
 const router = express.Router();
-router.use(authMw);
+// Use the same demo-auth (x-demo-user-id) as every other v3 route, so the
+// pipeline-v3 frontend can actually read/mark notifications. (Was on JWT-only
+// auth, which the demo frontend never sends — every call 401'd.)
+router.use(demoAuth);
 
 // GET /api/notifications
 router.get('/', (req, res) => {

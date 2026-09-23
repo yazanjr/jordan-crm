@@ -1157,8 +1157,57 @@
     );
   }
 
+  // ============================================================================
+  // FULL read-only render — shows EVERY field (incl. blanks / unchecked) so a
+  // viewer can tell exactly what the salesman filled vs left empty. Walks the
+  // whole form_data graph generically, so it never drifts from the form shape.
+  // ============================================================================
+  function DesignRequestFullForm({ form }) {
+    if (!form || typeof form !== 'object' || !form.form_type) {
+      return <div style={{ fontSize: 12, color: 'var(--fg-tertiary)' }}>No form data captured.</div>;
+    }
+    const human = k => String(k).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    const isEmpty = v => v == null || v === '' || (Array.isArray(v) && v.length === 0);
+    const isPlainObj = v => v && typeof v === 'object' && !Array.isArray(v);
+    const scalar = (v) => {
+      if (v === true)  return <span style={{ color: 'var(--img-green-700)', fontWeight: 700 }}>✓ Yes</span>;
+      if (v === false) return <span style={{ color: 'var(--fg-tertiary)' }}>✗ No</span>;
+      if (isEmpty(v))  return <span style={{ color: 'var(--fg-tertiary)', fontStyle: 'italic' }}>— not filled</span>;
+      if (Array.isArray(v)) return v.map(x => (x && typeof x === 'object') ? (x.name || JSON.stringify(x)) : x).join(', ');
+      return String(v);
+    };
+    const Row = ({ label, value }) => (
+      <div style={{ display: 'flex', gap: 10, fontSize: 12.5, padding: '3px 0', borderBottom: '1px dotted var(--border-subtle)' }}>
+        <span style={{ minWidth: 190, color: 'var(--fg-secondary)' }}>{label}</span>
+        <span style={{ flex: 1, color: 'var(--fg-primary)', fontWeight: 500 }}>{scalar(value)}</span>
+      </div>
+    );
+    const renderGroup = (obj, prefix) => Object.entries(obj).map(([k, v]) => {
+      if (isPlainObj(v)) return (
+        <div key={prefix + k} style={{ margin: '6px 0 2px' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: 'var(--img-orange-700)', margin: '8px 0 3px' }}>{human(k)}</div>
+          <div style={{ paddingLeft: 10 }}>{renderGroup(v, prefix + k + '.')}</div>
+        </div>
+      );
+      return <Row key={prefix + k} label={human(k)} value={v} />;
+    });
+    const skip = new Set(['form_type']);
+    if (form.form_type === 'AC') skip.add('heating');
+    else if (form.form_type === 'Heating') skip.add('ac');
+    const entries = Object.entries(form).filter(([k]) => !skip.has(k));
+    return (
+      <div style={{ fontSize: 12.5 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--fg-tertiary)', marginBottom: 6 }}>
+          Form type: <b style={{ color: 'var(--fg-primary)' }}>{form.form_type || '—'}</b>
+        </div>
+        {renderGroup(Object.fromEntries(entries), '')}
+      </div>
+    );
+  }
+
   // Replace the old simple modal so existing call sites continue to work unchanged.
   window.RequestDesignModal = DesignRequestForm;
   window.DesignRequestForm = DesignRequestForm;
   window.DesignRequestSummary = DesignRequestSummary;
+  window.DesignRequestFullForm = DesignRequestFullForm;
 })();

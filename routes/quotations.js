@@ -6,14 +6,10 @@ const { requirePerm } = require('../middleware/permission');
 const router = express.Router();
 router.use(authMw);
 
-function notify(io, userIds, type, message, oppId) {
-  if (!io) return;
-  const insert = db.prepare(`INSERT INTO notifications (user_id, type, message, opp_id) VALUES (?, ?, ?, ?)`);
-  userIds.forEach(uid => {
-    if (!uid) return;
-    insert.run(uid, type, message, oppId || null);
-    io.to(`user:${uid}`).emit('notification', { type, message });
-  });
+// Recipients are decided by utils/notifications.js (Settings → Notifications).
+const NOTIF = require('../utils/notifications');
+function notify(req, userIds, type, message, oppId) {
+  return NOTIF.send(req.io, req.user && req.user.id, userIds, type, message, { oppId });
 }
 
 // GET /api/quotations/opp/:oppId — all versions for an opportunity
@@ -61,7 +57,7 @@ router.post('/', requirePerm('quot.create'), (req, res) => {
 
   // Notify design manager
   const dms = db.prepare(`SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id WHERE r.name = 'design_manager'`).all();
-  notify(req.io, dms.map(m => m.id), 'quotation_created', `New quotation v${version} created for "${opp.title}"`, opp_id);
+  notify(req, dms.map(m => m.id), 'quotation_created', `New quotation v${version} created for "${opp.title}"`, opp_id);
 
   res.json({ id: result.lastInsertRowid, version, success: true });
 });
@@ -75,7 +71,7 @@ router.post('/:id/submit', requirePerm('quot.create'), (req, res) => {
   db.prepare(`UPDATE quotations SET status='UnderReview' WHERE id=?`).run(q.id);
   const opp = db.prepare('SELECT title FROM opportunities WHERE id = ?').get(q.opp_id);
   const dms = db.prepare(`SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id WHERE r.name = 'design_manager'`).all();
-  notify(req.io, dms.map(m => m.id), 'quotation_submitted', `Quotation v${q.version} submitted for review — "${opp?.title}"`, q.opp_id);
+  notify(req, dms.map(m => m.id), 'quotation_submitted', `Quotation v${q.version} submitted for review — "${opp?.title}"`, q.opp_id);
 
   res.json({ success: true });
 });
@@ -85,7 +81,7 @@ router.post('/:id/approve', requirePerm('quot.approve'), (req, res) => {
   const q = db.prepare('SELECT * FROM quotations WHERE id = ?').get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Not found.' });
   db.prepare(`UPDATE quotations SET status='Approved', reviewed_by=? WHERE id=?`).run(req.user.id, q.id);
-  notify(req.io, [q.designer_id], 'quotation_approved', `Your quotation v${q.version} was approved`, q.opp_id);
+  notify(req, [q.designer_id], 'quotation_approved', `Your quotation v${q.version} was approved`, q.opp_id);
   res.json({ success: true });
 });
 
@@ -96,7 +92,7 @@ router.post('/:id/revise', requirePerm('quot.request_revision'), (req, res) => {
   if (!q) return res.status(404).json({ error: 'Not found.' });
   db.prepare(`UPDATE quotations SET status='RevisionRequested', reviewed_by=?, notes=? WHERE id=?`)
     .run(req.user.id, revision_notes || q.notes, q.id);
-  notify(req.io, [q.designer_id], 'quotation_revision', `Revision requested on v${q.version}`, q.opp_id);
+  notify(req, [q.designer_id], 'quotation_revision', `Revision requested on v${q.version}`, q.opp_id);
   res.json({ success: true });
 });
 
@@ -107,7 +103,7 @@ router.post('/:id/release', requirePerm('quot.release'), (req, res) => {
   db.prepare(`UPDATE quotations SET status='Released', released_at=datetime('now') WHERE id=?`).run(q.id);
 
   const opp = db.prepare('SELECT * FROM opportunities WHERE id = ?').get(q.opp_id);
-  notify(req.io, [opp?.salesman_id], 'quotation_released',
+  notify(req, [opp?.salesman_id], 'quotation_released',
     `Quotation v${q.version} released for "${opp?.title}"`, q.opp_id);
 
   res.json({ success: true });

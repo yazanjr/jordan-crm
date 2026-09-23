@@ -40,6 +40,7 @@ app.use('/api/diagnostics',   require('./routes/diagnostics'));
 // Design workflow (uses demo-auth via x-demo-user-id header — see middleware/demoAuth.js)
 app.use('/api',               require('./routes/design'));
 app.use('/api',               require('./routes/products'));
+app.use('/api',               require('./routes/installation'));
 
 // Idempotent design-pages seed (runs once on first start; safe to re-run).
 require('./database/design_seed')();

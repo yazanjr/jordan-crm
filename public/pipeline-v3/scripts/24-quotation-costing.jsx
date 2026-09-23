@@ -77,6 +77,7 @@ function QuotationList({ onPick }) {
 function CostingDetail({ quotationId, onBack, fireToast }) {
   const [basis, setBasis] = useState('inclusive');
   const [targetGP, setTargetGP] = useState(15);       // percent
+  const [tiersInput, setTiersInput] = useState('0, 20, 40, 48'); // discount % list (editable)
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
   const [customDisc, setCustomDisc] = useState(0);    // percent
@@ -111,6 +112,21 @@ function CostingDetail({ quotationId, onBack, fireToast }) {
     return { d, revenue, gp_value, gp_pct, ok: gp_pct != null && gp_pct >= tgt };
   }, [base, customDisc, tgt]);
 
+  // Discount tiers are computed CLIENT-SIDE from the editable list + base totals,
+  // so editing the tiers or the target GP never triggers a refetch (keeps focus).
+  const tierRows = useMemo(() => {
+    if (!base || !base.list_total) return [];
+    const ds = String(tiersInput).split(',').map(s => Number(s.trim()) / 100)
+      .filter(n => Number.isFinite(n) && n >= 0 && n < 1);
+    const uniq = [...new Set(ds)].sort((a, b) => a - b);
+    return uniq.map(d => {
+      const revenue = base.list_total * (1 - d);
+      const gp_value = revenue - base.cost_total;
+      const gp_pct = revenue > 0 ? gp_value / revenue : null;
+      return { discount: d, revenue, cost: base.cost_total, gp_value, gp_pct, ok: gp_pct != null && gp_pct >= tgt };
+    });
+  }, [base, tiersInput, tgt]);
+
   const th = { padding: '9px 12px', fontSize: 10.5, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--fg-tertiary)', textAlign: 'right', borderBottom: '1px solid var(--border-default)', whiteSpace: 'nowrap' };
   const td = { padding: '9px 12px', fontSize: 13, textAlign: 'right', borderBottom: '1px solid var(--border-subtle)', whiteSpace: 'nowrap' };
 
@@ -131,6 +147,11 @@ function CostingDetail({ quotationId, onBack, fireToast }) {
           TARGET GP %
           <input type="number" min="0" max="90" step="0.5" value={targetGP} onChange={e => setTargetGP(e.target.value)}
             style={{ height: 34, width: 110, padding: '0 10px', border: '1px solid var(--border-default)', borderRadius: 7, fontSize: 13, background: 'var(--bg-surface)' }} />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, fontWeight: 600, color: 'var(--fg-secondary)' }}>
+          DISCOUNT TIERS (% — comma-separated)
+          <input type="text" value={tiersInput} onChange={e => setTiersInput(e.target.value)} placeholder="0, 20, 40, 48"
+            style={{ height: 34, width: 180, padding: '0 10px', border: '1px solid var(--border-default)', borderRadius: 7, fontSize: 13, background: 'var(--bg-surface)' }} />
         </label>
       </div>
 
@@ -158,6 +179,24 @@ function CostingDetail({ quotationId, onBack, fireToast }) {
           </div>
         )}
 
+        {data.installation && (data.installation.enabled || (data.installation.split_copper && data.installation.split_copper.metres > 0)) && (() => {
+          const I = data.installation; const b = I.breakdown || {}; const c = I.cost || {};
+          const priceRows = [['Installation labour', b.labour], ['Copper network', b.copper], ['Shop drawings', b.shop_drawings], ['Insulation', b.insulation], ['Cora cloth', b.cora], ['Cladding', b.cladding], ['Cable tray', b.cable_tray], ['Shut-off valves', b.valves], ['Location extra', b.location], ['Supervision / maintenance', b.supervision], ['Additional charge', b.additional]].filter(([, v]) => Number(v) > 0);
+          const costRows = [['Copper (cost)', c.copper], ['Labour (cost)', c.labour], ['Material & extras (cost)', c.material], ['Location extra (cost)', c.location], ['Supervision (cost)', c.supervision], ['Warranty (project cost)', c.warranty], ['PM visits (project cost)', c.pm_visits]].filter(([, v]) => Number(v) > 0);
+          const sc = I.split_copper && I.split_copper.metres > 0 ? I.split_copper : null;
+          const box = { background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)', borderRadius: 10, padding: '10px 14px', flex: 1, minWidth: 260 };
+          const row = (l, v, strong) => <div key={l} style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', fontSize: 12.5, fontWeight: strong ? 800 : 400, borderTop: strong ? '1px solid var(--border-subtle)' : 'none', marginTop: strong ? 4 : 0 }}><span style={{ color: strong ? 'var(--fg-primary)' : 'var(--fg-secondary)' }}>{l}</span><span className="t-num">{num(v)}</span></div>;
+          return (
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--fg-tertiary)', marginBottom: 6 }}>Installation &amp; project costs {I.counts ? `· ${I.counts.indoor} indoor · ${I.counts.modules} outdoor modules` : ''}</div>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                {I.enabled && <div style={box}><div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 4 }}>Selling price (INSTALL-VRF line)</div>{priceRows.map(([l, v]) => row(l, v))}{row('Installation list price', I.price, true)}{I.net !== I.price && row('Net after discount', I.net, true)}</div>}
+                {I.enabled && <div style={box}><div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 4 }}>Cost side (what Costing counts)</div>{costRows.map(([l, v]) => row(l, v))}{row('Installation + project cost', (I.cost_total || 0) + (c.warranty || 0) + (c.pm_visits || 0), true)}</div>}
+                {sc && <div style={box}><div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 4 }}>Copper for split (COPPER-SPLIT line)</div>{row(`${sc.metres} m × ${sc.unit_price} JD`, sc.price)}{row('Net after discount', sc.net)}{sc.cost != null && row(`Cost (${sc.unit_cost} JD/m, ${sc.brand || 'Gree'})`, sc.cost, true)}</div>}
+              </div>
+            </div>);
+        })()}
+
         {/* Suggested max discount */}
         {suggestedMax != null && (
           <div style={{ padding: '14px 16px', borderRadius: 10, marginBottom: 18, background: 'var(--img-green-50, #ECF8F1)', border: '1px solid var(--img-green, #1E9E5A)' }}>
@@ -176,21 +215,19 @@ function CostingDetail({ quotationId, onBack, fireToast }) {
               <th style={th}>Selling total</th><th style={th}>Cost</th><th style={th}>Gross profit</th><th style={th}>GP %</th><th style={th}>Verdict</th>
             </tr></thead>
             <tbody>
-              {data.tiers.map((t, i) => {
-                const ok = t.gp_pct != null && t.gp_pct >= tgt;   // vs the live target
-                return (
+              {tierRows.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: 'center', color: 'var(--fg-tertiary)' }}>Enter one or more discount % values above.</td></tr>}
+              {tierRows.map((t, i) => (
                 <tr key={i} style={{ background: t.discount === 0 ? 'var(--neutral-25)' : 'transparent' }}>
                   <td style={{ ...td, textAlign: 'left', fontWeight: 700 }}>{t.discount === 0 ? 'List (0%)' : `−${(t.discount * 100).toFixed(0)}%`}</td>
                   <td style={td} className="t-num">{num(t.revenue)}</td>
                   <td style={{ ...td, color: 'var(--fg-secondary)' }} className="t-num">{num(t.cost)}</td>
                   <td style={{ ...td, fontWeight: 700, color: t.gp_value < 0 ? 'var(--color-danger)' : 'var(--fg-primary)' }} className="t-num">{num(t.gp_value)}</td>
-                  <td style={{ ...td, fontWeight: 800, color: ok ? 'var(--img-green-700)' : 'var(--color-danger)' }} className="t-num">{pct(t.gp_pct)}</td>
+                  <td style={{ ...td, fontWeight: 800, color: t.ok ? 'var(--img-green-700)' : 'var(--color-danger)' }} className="t-num">{pct(t.gp_pct)}</td>
                   <td style={td}>
-                    <span style={{ fontSize: 11, fontWeight: 800, padding: '2px 9px', borderRadius: 999, color: '#fff', background: ok ? 'var(--img-green)' : 'var(--color-danger)' }}>{ok ? 'OK' : 'BELOW'}</span>
+                    <span style={{ fontSize: 11, fontWeight: 800, padding: '2px 9px', borderRadius: 999, color: '#fff', background: t.ok ? 'var(--img-green)' : 'var(--color-danger)' }}>{t.ok ? 'OK' : 'BELOW'}</span>
                   </td>
                 </tr>
-                );
-              })}
+              ))}
             </tbody>
           </table>
         </div>

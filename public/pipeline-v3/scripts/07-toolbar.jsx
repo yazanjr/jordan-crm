@@ -19,7 +19,8 @@ function Toolbar({ view = 'kanban', onViewChange, onNewDeal, search, setSearch, 
       display: 'flex', alignItems: 'center', gap: 6, padding: '12px 24px',
       borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-surface)',
     }}>
-      {/* Primary CTA — pill button */}
+      {/* Primary CTA — pill button (only for roles that can create deals) */}
+      {window.canCreateDeal?.() && (
       <button
         onClick={onNewDeal}
         style={{
@@ -41,6 +42,7 @@ function Toolbar({ view = 'kanban', onViewChange, onNewDeal, search, setSearch, 
           <ChevDown size={14} />
         </span>
       </button>
+      )}
 
       {/* Search */}
       <div style={{ position: 'relative', marginLeft: 8 }}>

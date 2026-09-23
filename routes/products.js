@@ -102,6 +102,29 @@ function stripCosts(row) {
   return out;
 }
 
+// Customer-facing quotation sections (from the Excel "General" sheet). This is
+// SEPARATE from the pricing category (category_l1): the pricing category drives
+// cost; the quote section decides how items are grouped in the client quote.
+const QUOTE_SECTIONS = ['VRF System', 'Split System', 'Ducted', 'FCU', 'CCU', 'AHU', 'Chiller', 'Package', 'Heat Pump', 'Copper', 'Installation'];
+// Auto-derive a quote section from what we know when the uploader leaves it blank.
+function deriveQuoteSection(sku) {
+  const cat = String(sku.category_l1 || '').toLowerCase();
+  const txt = [sku.section, sku.category_l2, sku.model, sku.description].map(x => String(x || '').toLowerCase()).join(' ');
+  if (/chiller/.test(txt)) return 'Chiller';
+  if (/\bahu\b|air handling/.test(txt)) return 'AHU';
+  if (/package/.test(txt)) return 'Package';
+  if (/copper/.test(txt)) return 'Copper';
+  if (/install/.test(txt)) return 'Installation';
+  if (/heat ?pump/.test(txt)) return 'Heat Pump';
+  if (cat.includes('gmv')) return 'VRF System';               // GMV = GREE VRF (all indoor/outdoor)
+  if (cat.includes('fcu')) return 'FCU';
+  if (cat.includes('ccu')) return 'CCU';
+  if (cat.includes('u-match') || cat.includes('umatch') || cat.includes('u match'))
+    return /\bduct/.test(txt) ? 'Ducted' : 'Split System';
+  if (/\bduct/.test(txt)) return 'Ducted';
+  return null;   // leave blank → falls back to the item's own category at quote time
+}
+
 function requirePM(req, res, next) {
   if (req.user.role === 'admin' || req.user.role === 'product_manager') return next();
   return res.status(403).json({ error: 'Product Management permission required.' });
@@ -196,7 +219,7 @@ router.get('/product-skus/category-tree', (req, res) => {
 // Filter by category (back-compat = Layer 3) or by layer columns. Cost columns
 // are stripped unless caller has costs.view.
 router.get('/product-skus', (req, res) => {
-  const { category, category_l1, category_l2, category_l3, brand, search, price_book_id } = req.query;
+  const { category, category_l1, category_l2, category_l3, quote_section, brand, search, price_book_id } = req.query;
   const clauses = ['active=1'];
   const params  = [];
   if (price_book_id) { clauses.push('price_book_id = ?'); params.push(+price_book_id); }
@@ -205,6 +228,7 @@ router.get('/product-skus', (req, res) => {
   if (category_l1)  { clauses.push('category_l1 = ?');   params.push(category_l1); }
   if (category_l2)  { clauses.push('category_l2 = ?');   params.push(category_l2); }
   if (category_l3)  { clauses.push('category_l3 = ?');   params.push(category_l3); }
+  if (quote_section){ clauses.push('quote_section = ?'); params.push(quote_section); }  // designer's fast finder
   if (search)   { clauses.push('(model LIKE ? OR description LIKE ? OR erp_code LIKE ? OR item_id LIKE ?)');
                   params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`); }
   const rows = db.prepare(
@@ -295,6 +319,32 @@ router.put('/product-skus/bulk', requirePM, (req, res) => {
     }
     db.exec('COMMIT');
     res.json({ ok: true, updated: n });
+  } catch (e) { db.exec('ROLLBACK'); res.status(500).json({ error: e.message }); }
+});
+
+// ── POST /api/product-skus/bulk-price-from-gp  { ids:[], target_gp }
+// Group pricing: set Price 1 for every selected GREE item so it hits the target
+// GP% at list, then recompute. Items without a cost are skipped and reported.
+router.post('/product-skus/bulk-price-from-gp', requirePM, (req, res) => {
+  const ids = Array.isArray(req.body.ids) ? req.body.ids.map(n => +n).filter(Boolean) : [];
+  if (!ids.length) return res.status(400).json({ error: 'No SKUs selected.' });
+  const targetGP = Number(req.body.target_gp);
+  if (!Number.isFinite(targetGP) || targetGP < 0 || targetGP >= 1)
+    return res.status(400).json({ error: 'target_gp must be a fraction between 0 and 1 (e.g. 0.45).' });
+  const pp = loadPricingParams();
+  db.exec('BEGIN');
+  try {
+    let updated = 0, skipped = 0;
+    for (const id of ids) {
+      const s = db.prepare('SELECT id, cost_inclusive, item_id, active FROM product_skus WHERE id = ? AND active = 1').get(id);
+      if (!s || s.item_id == null || !(Number(s.cost_inclusive) > 0)) { skipped++; continue; }
+      const p1 = pricing.suggestPrice1(s.cost_inclusive, targetGP, pp.globals);
+      db.prepare(`UPDATE product_skus SET price1_inclusive = ?, updated_at = datetime('now') WHERE id = ?`).run(p1, id);
+      recomputeItemById(id, pp);
+      updated++;
+    }
+    db.exec('COMMIT');
+    res.json({ ok: true, updated, skipped_no_cost: skipped, target_gp: targetGP });
   } catch (e) { db.exec('ROLLBACK'); res.status(500).json({ error: e.message }); }
 });
 
@@ -662,6 +712,126 @@ router.put('/pricing-params', requirePM, (req, res) => {
   res.json({ ok: true, recomputed });
 });
 
+// Derive a category's code PREFIX from any existing row (codes are PREFIX_SUFFIX).
+function prefixForCategory(category) {
+  const row = db.prepare(`SELECT code FROM pricing_params WHERE category = ? COLLATE NOCASE LIMIT 1`).get(category);
+  if (!row) return null;
+  const parts = String(row.code).split('_');
+  return parts.slice(0, -1).join('_') || parts[0];
+}
+
+// POST /api/pricing-params — add ONE parameter row (a tier or an adder).
+// Body: { category, suffix?|code?, label?, value }. Prefix is derived from the
+// category's existing rows when only a suffix is given (e.g. add tier "T5").
+router.post('/pricing-params', requirePM, (req, res) => {
+  const category = String(req.body.category || '').trim();
+  if (!category) return res.status(400).json({ error: 'category required.' });
+  let code = req.body.code ? String(req.body.code).trim().toUpperCase() : null;
+  if (!code) {
+    const suffix = String(req.body.suffix || '').trim().toUpperCase();
+    if (!suffix) return res.status(400).json({ error: 'code or suffix required.' });
+    const prefix = prefixForCategory(category);
+    if (!prefix) return res.status(400).json({ error: `Unknown category "${category}" — add the category first.` });
+    code = `${prefix}_${suffix}`;
+  }
+  if (!/^[A-Z0-9]+_[A-Z0-9]+$/.test(code)) return res.status(400).json({ error: 'code must be PREFIX_SUFFIX (letters/digits, one underscore).' });
+  const suffix = suffixOf(code);
+  if (!isTierSuffix(suffix) && !KNOWN_PARAM_SUFFIXES.includes(suffix))
+    return res.status(400).json({ error: `Unknown suffix "${suffix}". Use T1..Tn or one of ${KNOWN_PARAM_SUFFIXES.join(', ')}.` });
+  if (db.prepare(`SELECT 1 FROM pricing_params WHERE code = ?`).get(code))
+    return res.status(409).json({ error: `Parameter "${code}" already exists.` });
+  const label = req.body.label != null ? String(req.body.label) : (isTierSuffix(suffix) ? `Discount tier ${suffix.slice(1)}` : suffix);
+  const value = Number(req.body.value) || 0;
+  try {
+    db.prepare(`INSERT INTO pricing_params (category, code, label, value, updated_by) VALUES (?,?,?,?,?)`).run(category, code, label, value, req.user.id);
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+  let recomputed = 0;
+  try { recomputed = recomputeAll(); } catch (e) { return res.status(500).json({ error: 'Added, but recompute failed: ' + e.message }); }
+  res.status(201).json({ ok: true, code, recomputed });
+});
+
+// DELETE /api/pricing-params/:code — delete one row (a tier or adder).
+// Guard: never delete GLOBAL rows or a category's core SHIP/CUST/EXTRA/TAX.
+router.delete('/pricing-params/:code', requirePM, (req, res) => {
+  const code = String(req.params.code).trim().toUpperCase();
+  const row = db.prepare(`SELECT category, code FROM pricing_params WHERE code = ?`).get(code);
+  if (!row) return res.status(404).json({ error: 'Parameter not found.' });
+  if (_catKey(row.category) === 'global') return res.status(400).json({ error: 'GLOBAL parameters cannot be deleted.' });
+  if (CORE_PARAM_SUFFIXES.includes(suffixOf(code))) return res.status(400).json({ error: `${suffixOf(code)} is a core rate and cannot be deleted (set it to 0 instead).` });
+  db.prepare(`DELETE FROM pricing_params WHERE code = ?`).run(code);
+  let recomputed = 0;
+  try { recomputed = recomputeAll(); } catch (e) { return res.status(500).json({ error: 'Deleted, but recompute failed: ' + e.message }); }
+  res.json({ ok: true, code, recomputed });
+});
+
+// GET /api/pricing-categories — cost categories (non-GLOBAL) with their rates,
+// tiers, prefix, and how many active SKUs use each (for the Add-form + delete guard).
+router.get('/pricing-categories', requirePM, (req, res) => {
+  const pp = loadPricingParams();
+  const out = Object.keys(pp.byCategory).map(key => {
+    // Recover the display name (original casing) from a row.
+    const nameRow = db.prepare(`SELECT category FROM pricing_params WHERE category = ? COLLATE NOCASE LIMIT 1`).get(key);
+    const category = nameRow ? nameRow.category : key;
+    const p = pp.byCategory[key];
+    const { tiers } = catParamsFor(pp.byCategory, category);
+    const count = db.prepare(`SELECT COUNT(*) c FROM product_skus WHERE category_l1 = ? COLLATE NOCASE AND active = 1`).get(category).c;
+    return {
+      category, prefix: prefixForCategory(category),
+      ship: p.SHIP, cust: p.CUST, extra: p.EXTRA, tax: p.TAX,
+      copper: p.COPPER, install: p.INSTALL, tgp: p.TGP, tiers, item_count: count,
+    };
+  }).sort((a, b) => a.category.localeCompare(b.category));
+  res.json(out);
+});
+
+// POST /api/pricing-categories — add a whole cost category (its rates + tiers).
+// Body: { category, code_prefix, ship, cust, extra, tax, copper?, install?, tgp?, tiers:[] }
+router.post('/pricing-categories', requirePM, (req, res) => {
+  const category = String(req.body.category || '').trim();
+  const prefix = String(req.body.code_prefix || '').trim().toUpperCase();
+  if (!category) return res.status(400).json({ error: 'category required.' });
+  if (!/^[A-Z0-9]+$/.test(prefix)) return res.status(400).json({ error: 'code_prefix must be letters/digits only, no underscore (e.g. SPLIT).' });
+  if (db.prepare(`SELECT 1 FROM pricing_params WHERE category = ? COLLATE NOCASE`).get(category))
+    return res.status(409).json({ error: `Category "${category}" already exists.` });
+  if (db.prepare(`SELECT 1 FROM pricing_params WHERE code LIKE ? ESCAPE '\\'`).get(prefix + '\\_%'))
+    return res.status(409).json({ error: `Code prefix "${prefix}" is already used by another category.` });
+  const num = (v, d = 0) => { const n = Number(v); return Number.isFinite(n) ? n : d; };
+  const rows = [
+    ['SHIP', 'Shipping %', num(req.body.ship)],
+    ['CUST', 'Custom duties %', num(req.body.cust)],
+    ['EXTRA', 'Extra multi %', num(req.body.extra)],
+    ['TAX', 'Sales tax %', num(req.body.tax)],
+  ];
+  if (req.body.copper != null && req.body.copper !== '') rows.push(['COPPER', 'Free copper pipes (JOD/set)', num(req.body.copper)]);
+  if (req.body.install != null && req.body.install !== '') rows.push(['INSTALL', 'Installation (JOD/set)', num(req.body.install)]);
+  if (req.body.tgp != null && req.body.tgp !== '') rows.push(['TGP', 'Default target GP %', num(req.body.tgp)]);
+  const tiers = Array.isArray(req.body.tiers) ? req.body.tiers.map(Number).filter(n => Number.isFinite(n) && n >= 0 && n < 1) : [];
+  tiers.forEach((t, i) => rows.push([`T${i + 1}`, `Discount tier ${i + 1}`, t]));
+  db.exec('BEGIN');
+  try {
+    const ins = db.prepare(`INSERT INTO pricing_params (category, code, label, value, updated_by) VALUES (?,?,?,?,?)`);
+    for (const [suffix, label, value] of rows) ins.run(category, `${prefix}_${suffix}`, label, value, req.user.id);
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); return res.status(500).json({ error: e.message }); }
+  res.status(201).json({ ok: true, category, prefix, rows: rows.length });
+});
+
+// DELETE /api/pricing-categories/:category — remove a category's params.
+// Guard: refuse if active SKUs still use it (unless ?force=1).
+router.delete('/pricing-categories/:category', requirePM, (req, res) => {
+  const category = String(req.params.category).trim();
+  if (_catKey(category) === 'global') return res.status(400).json({ error: 'GLOBAL cannot be deleted.' });
+  const exists = db.prepare(`SELECT 1 FROM pricing_params WHERE category = ? COLLATE NOCASE`).get(category);
+  if (!exists) return res.status(404).json({ error: 'Category not found.' });
+  const inUse = db.prepare(`SELECT COUNT(*) c FROM product_skus WHERE category_l1 = ? COLLATE NOCASE AND active = 1`).get(category).c;
+  if (inUse > 0 && String(req.query.force) !== '1')
+    return res.status(409).json({ error: `${inUse} active item(s) still use "${category}". Reassign or retire them first, or force delete.`, in_use: inUse });
+  db.prepare(`DELETE FROM pricing_params WHERE category = ? COLLATE NOCASE`).run(category);
+  let recomputed = 0;
+  try { recomputed = recomputeAll(); } catch (e) { return res.status(500).json({ error: 'Deleted, but recompute failed: ' + e.message }); }
+  res.json({ ok: true, category, recomputed });
+});
+
 // GET /api/pricing-tiers — the discount tiers per category (for the pricelist GP table + UI).
 router.get('/pricing-tiers', (req, res) => {
   const pp = loadPricingParams();
@@ -698,6 +868,7 @@ router.get('/product-skus/:id/buildup', (req, res) => {
     costs: { inclusive: s.cost_inclusive, stax_exempt: s.cost_stax_exempt, exempted: s.cost_exempted, adders },
     prices: { price1: s.price1_inclusive, price2: s.price2_stax_exempt, price3: s.price3_exempted, iraq: s.price_iraq },
     gp, tiers,
+    target_gp: (pp.byCategory[_catKey(s.category_l1)] || {}).TGP,   // default GP% for this category
   });
 });
 
@@ -705,13 +876,13 @@ router.get('/product-skus/:id/buildup', (req, res) => {
 // The new pricelist only needs the item's identity + FOB; costs & prices are
 // COMPUTED by the engine. Price 1 is optional (set later per item, or here in bulk).
 router.get('/pricing/import-template', (req, res) => {
-  const headers = ['Item ID', 'Model', 'Description', 'Category', 'Section', 'FOB Net (USD)', 'Price 1 Inclusive (JOD)'];
+  const headers = ['Item ID', 'Model', 'Description', 'Category', 'Section', 'Quotation Section', 'FOB Net (USD)', 'Price 1 Inclusive (JOD)'];
   const example = [
-    ['UMP-01', 'GMV-ND22PLS/A-T', '1-way cassette 2.2kW', 'U-Match Projects', '1-way Cassette', 392, ''],
-    ['UMP-02', 'GMV-ND28PLS/A-T', '1-way cassette 2.8kW', 'U-Match Projects', '1-way Cassette', 430, ''],
+    ['UMP-01', 'GMV-ND22PLS/A-T', '1-way cassette 2.2kW', 'U-Match Projects', '1-way Cassette', 'Ducted', 392, ''],
+    ['UMP-02', 'GMV-ND28PLS/A-T', '1-way cassette 2.8kW', 'U-Match Projects', '1-way Cassette', '', 430, ''],
   ];
   const itemsWs = XLSX.utils.aoa_to_sheet([headers, ...example]);
-  itemsWs['!cols'] = [{ wch: 12 }, { wch: 22 }, { wch: 30 }, { wch: 20 }, { wch: 18 }, { wch: 14 }, { wch: 20 }];
+  itemsWs['!cols'] = [{ wch: 12 }, { wch: 22 }, { wch: 30 }, { wch: 20 }, { wch: 18 }, { wch: 18 }, { wch: 14 }, { wch: 20 }];
 
   const help = [
     ['GREE PRICELIST — UPLOAD TEMPLATE'],
@@ -723,8 +894,9 @@ router.get('/pricing/import-template', (req, res) => {
     ['Item ID', 'YES', 'The unique code for the item. Used to find & update it later. Keep it stable.'],
     ['Model', 'YES', 'The item name / model number shown in the pricelist.'],
     ['Description', 'optional', 'A short description.'],
-    ['Category', 'YES', 'Drives the pricing parameters (ship/customs/tax/tiers). Must match a category in Parameters.'],
+    ['Category', 'YES', 'The PRICING category — drives cost (ship/customs/tax/tiers). Must match a category in Parameters (GMV, FCU, CCU, U-Match Projects…).'],
     ['Section', 'optional', 'Sub-group used to filter/find the item in the pricelist.'],
+    ['Quotation Section', 'optional', 'The customer-facing section on the QUOTE (see the "Quotation Sections" list). Leave BLANK and the system auto-assigns one from the pricing category — fill it only to override.'],
     ['FOB Net (USD)', 'YES', 'The factory FOB price in USD. Everything (cost, selling price options) is built from this.'],
     ['Price 1 Inclusive (JOD)', 'optional', 'The selling price. Leave blank to set it later in the app (manually or from a target GP%).'],
     [''],
@@ -732,11 +904,28 @@ router.get('/pricing/import-template', (req, res) => {
     ['To change the rates used in the calculation, use the ⚙ Parameters button in the Pricelist page.'],
   ];
   const helpWs = XLSX.utils.aoa_to_sheet(help);
-  helpWs['!cols'] = [{ wch: 26 }, { wch: 12 }, { wch: 80 }];
+  helpWs['!cols'] = [{ wch: 26 }, { wch: 12 }, { wch: 92 }];
+
+  // Reference lists so the uploader can copy exact values. Pricing categories are
+  // exactly those that drive costing (from pricing_params, non-GLOBAL), deduped
+  // case-insensitively and shown in the casing the items use (avoids "U-Match" vs
+  // "U-MATCH" and legacy categories like "AC" that have no parameters).
+  const paramCats = db.prepare(`SELECT DISTINCT category FROM pricing_params WHERE category <> 'GLOBAL'`).all().map(r => r.category);
+  const itemCasing = new Map(db.prepare(`SELECT DISTINCT category_l1 AS c FROM product_skus WHERE category_l1 IS NOT NULL`).all().map(r => [String(r.c).toLowerCase(), r.c]));
+  const seenCat = new Set();
+  const cats = paramCats.sort((a, b) => a.localeCompare(b)).reduce((acc, c) => {
+    const k = c.toLowerCase(); if (!seenCat.has(k)) { seenCat.add(k); acc.push(itemCasing.get(k) || c); } return acc;
+  }, []);
+  const lists = [['Quotation Sections (for the "Quotation Section" column)', '', 'Pricing Categories (for the "Category" column)']];
+  const maxLen = Math.max(QUOTE_SECTIONS.length, cats.length);
+  for (let i = 0; i < maxLen; i++) lists.push([QUOTE_SECTIONS[i] || '', '', cats[i] || '']);
+  const listsWs = XLSX.utils.aoa_to_sheet(lists);
+  listsWs['!cols'] = [{ wch: 44 }, { wch: 3 }, { wch: 30 }];
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, itemsWs, 'Item Master');
   XLSX.utils.book_append_sheet(wb, helpWs, 'How to use');
+  XLSX.utils.book_append_sheet(wb, listsWs, 'Lists');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', 'attachment; filename="GREE-pricelist-upload-template.xlsx"');
@@ -838,6 +1027,18 @@ router.post('/pricing/import', requirePM, pricingUpload.single('file'), (req, re
       if (existing) { updItem.run(...vals.slice(1), existing.id); id = existing.id; updated++; }
       else { id = insItem.run(...vals).lastInsertRowid; inserted++; }
       recomputeItemById(id, pp);   // compute costs/prices from FOB + Price1
+      // Quotation section (optional column): use it if given; else auto-derive when
+      // the item has none yet (never overwrite an existing manual tag on re-import).
+      const provQS = cell(r, 'Quotation Section', 'Quote Section');
+      if (provQS && String(provQS).trim()) {
+        db.prepare(`UPDATE product_skus SET quote_section=? WHERE id=?`).run(String(provQS).trim(), id);
+      } else {
+        const cur = db.prepare('SELECT quote_section, category_l1, section, category_l2, model, description FROM product_skus WHERE id=?').get(id);
+        if (cur && !cur.quote_section) {
+          const qs = deriveQuoteSection(cur);
+          if (qs) db.prepare('UPDATE product_skus SET quote_section=? WHERE id=?').run(qs, id);
+        }
+      }
     }
     // Replace mode: retire (hide) any item in this book that wasn't in the sheet.
     let retired = 0;

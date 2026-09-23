@@ -71,4 +71,12 @@
       });
     return _promise;
   };
+
+  // Can the current user create deals? Mirrors the backend `opps.create` grant
+  // (salesman / sales_manager / admin). Used to hide the "New deal" button from
+  // roles that would otherwise get a 403 dead-click (designers, PMs).
+  window.canCreateDeal = function canCreateDeal() {
+    const rk = (window.CURRENT_USER && window.CURRENT_USER.roleKey) || '';
+    return ['admin', 'sales_manager', 'salesman'].includes(rk);
+  };
 })();

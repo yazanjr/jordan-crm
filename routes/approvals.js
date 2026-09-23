@@ -8,14 +8,10 @@ const router = express.Router();
 // routes — swap to real JWT (authMw) with B.4.
 router.use(demoAuth);
 
-function notify(io, userIds, type, message, oppId) {
-  if (!io) return;
-  const insert = db.prepare(`INSERT INTO notifications (user_id, type, message, opp_id) VALUES (?, ?, ?, ?)`);
-  userIds.forEach(uid => {
-    if (!uid) return;
-    insert.run(uid, type, message, oppId || null);
-    io.to(`user:${uid}`).emit('notification', { type, message });
-  });
+// Recipients are decided by utils/notifications.js (Settings → Notifications).
+const NOTIF = require('../utils/notifications');
+function notify(req, userIds, type, message, oppId) {
+  return NOTIF.send(req.io, req.user && req.user.id, userIds, type, message, { oppId });
 }
 
 // POST /api/approvals — salesman requests discount override
@@ -33,8 +29,7 @@ router.post('/', requirePerm('disc.apply_standard'), (req, res) => {
   `).run(opp_id, quotation_id || null, req.user.id, requested_pct, notes || null);
 
   const opp = db.prepare('SELECT title FROM opportunities WHERE id = ?').get(opp_id);
-  const mgrs = db.prepare(`SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id WHERE r.name IN ('sales_manager','admin')`).all();
-  notify(req.io, mgrs.map(m => m.id), 'discount_request',
+  notify(req, [], 'discount_request',
     `Discount override ${requested_pct}% requested for "${opp?.title}"`, opp_id);
 
   res.json({ id: result.lastInsertRowid, success: true });
@@ -79,7 +74,7 @@ router.post('/:id/respond', requirePerm('disc.approve_override'), (req, res) => 
     WHERE id=?
   `).run(decision, req.user.id, approved_pct || approval.requested_pct, notes || null, approval.id);
 
-  notify(req.io, [approval.requested_by], 'discount_response',
+  notify(req, [approval.requested_by], 'discount_response',
     `Your discount request was ${decision.toLowerCase()}`, approval.opp_id);
 
   res.json({ success: true });

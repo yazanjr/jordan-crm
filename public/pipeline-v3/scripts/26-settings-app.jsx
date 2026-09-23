@@ -90,6 +90,71 @@ function friendlyDate(s) {
   return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
+// Settings → Notifications: per event, who is told (involved people + roles).
+function NotificationsTab({ onToast }) {
+  const [data, setData] = useState(null);
+  const [rules, setRules] = useState({});
+  const [saving, setSaving] = useState(false);
+  const load = () => window.api.get('/settings/notification-rules').then(d => { setData(d); setRules(JSON.parse(JSON.stringify(d.rules))); }).catch(() => setData({ error: true }));
+  useEffect(() => { load(); }, []);
+  if (!data) return <div style={{ padding: 48, textAlign: 'center', color: 'var(--fg-tertiary)' }}>Loading…</div>;
+  if (data.error) return <div style={{ padding: 48, textAlign: 'center', color: 'var(--fg-tertiary)' }}>Could not load the notification rules.</div>;
+  const dirty = JSON.stringify(rules) !== JSON.stringify(data.rules);
+  const toggleRole = (type, role) => setRules(r => { const cur = r[type] || { involved: false, roles: [] }; const has = cur.roles.includes(role); return { ...r, [type]: { ...cur, roles: has ? cur.roles.filter(x => x !== role) : [...cur.roles, role] } }; });
+  const toggleInvolved = (type) => setRules(r => ({ ...r, [type]: { ...(r[type] || { roles: [] }), involved: !(r[type] && r[type].involved) } }));
+  const save = async (reset) => {
+    setSaving(true);
+    try { const r = await window.api.put('/settings/notification-rules', reset ? { reset: true } : { rules }); setData(d => ({ ...d, rules: r.rules })); setRules(JSON.parse(JSON.stringify(r.rules))); onToast(reset ? 'Notification rules reset to defaults' : 'Notification rules saved'); }
+    catch (e) { onToast('Failed: ' + e.message, 'danger'); } finally { setSaving(false); }
+  };
+  const roleLabel = (n) => ({ admin: 'Admin', sales_manager: 'Sales Mgr', salesman: 'Salesman', design_manager: 'Design Mgr', designer: 'Designer', product_manager: 'Product Mgr' })[n] || n;
+  const groups = [...new Set(data.events.map(e => e.group))];
+  const cb = (checked, on, disabled) => <input type="checkbox" checked={!!checked} disabled={disabled} onChange={on} style={{ width: 16, height: 16, cursor: disabled ? 'not-allowed' : 'pointer' }} />;
+  const th = { fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--fg-tertiary)', padding: '8px 6px', textAlign: 'center', whiteSpace: 'nowrap' };
+  return (
+    <div style={{ maxWidth: 1000, margin: '0 auto', padding: '24px 24px 120px' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, marginBottom: 16 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>Who gets notified, and when</div>
+          <div style={{ fontSize: 12.5, color: 'var(--fg-secondary)', marginTop: 4 }}>
+            For each event: <b>Involved people</b> are the specific users the action is about (e.g. the deal's salesman); a ticked <b>role</b> means every active user in that role is told as well. The person who did the action is never notified. Notifications are in-app (bell icon).
+          </div>
+        </div>
+        <button onClick={() => window.confirm('Reset all notification rules to the defaults?') && save(true)} disabled={saving}
+          style={{ padding: '8px 12px', borderRadius: 7, border: '1px solid var(--border-default)', background: 'var(--bg-surface)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>Reset to defaults</button>
+        <button onClick={() => save(false)} disabled={saving || !dirty}
+          style={{ padding: '8px 16px', borderRadius: 7, border: 'none', background: dirty ? 'var(--img-orange)' : 'var(--neutral-200)', color: '#fff', fontSize: 12.5, fontWeight: 700, cursor: dirty ? 'pointer' : 'not-allowed' }}>{saving ? 'Saving…' : 'Save'}</button>
+      </div>
+      <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)', borderRadius: 10, overflow: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+            <th style={{ ...th, textAlign: 'left', minWidth: 260 }}>Event</th>
+            <th style={{ ...th, minWidth: 170 }}>Involved people</th>
+            {data.roles.map(r => <th key={r.name} style={th} title={r.description}>{roleLabel(r.name)}</th>)}
+          </tr></thead>
+          <tbody>
+            {groups.map(g => (
+              <React.Fragment key={g}>
+                <tr><td colSpan={2 + data.roles.length} style={{ padding: '10px 10px 4px', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--img-orange-700, #B8680E)' }}>{g}</td></tr>
+                {data.events.filter(e => e.group === g).map(e => {
+                  const rule = rules[e.type] || { involved: false, roles: [] };
+                  return (
+                    <tr key={e.type} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                      <td style={{ padding: '7px 10px', fontSize: 12.5 }}>{e.label}</td>
+                      <td style={{ padding: '7px 6px', textAlign: 'center', fontSize: 11.5, color: 'var(--fg-secondary)' }}>
+                        {e.involved ? <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>{cb(rule.involved, () => toggleInvolved(e.type))}<span>{e.involved}</span></label> : <span style={{ color: 'var(--fg-tertiary)' }}>—</span>}
+                      </td>
+                      {data.roles.map(r => <td key={r.name} style={{ padding: '7px 6px', textAlign: 'center' }}>{cb(rule.roles.includes(r.name), () => toggleRole(e.type, r.name))}</td>)}
+                    </tr>);
+                })}
+              </React.Fragment>))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function SettingsApp() {
   const { Settings, Layers, Link, Check, Close, Plus, Users } = window.Icons;
 
@@ -163,7 +228,7 @@ function SettingsApp() {
     if (!rows) return [];
     const known = new Set([...GENERAL_ORDER, ...LISTS_ORDER]);
     const ordered = GENERAL_ORDER.filter(k => rowByKey[k]);
-    const extras = rows.filter(r => !known.has(r.key) && !isListSetting(r)).map(r => r.key);
+    const extras = rows.filter(r => !known.has(r.key) && !isListSetting(r) && r.key !== 'notification_rules').map(r => r.key);
     return [...ordered, ...extras].map(k => rowByKey[k]).filter(Boolean);
   }, [rows, rowByKey]);
 
@@ -202,6 +267,7 @@ function SettingsApp() {
             { id: 'lists',   label: 'Lists',   icon: Layers },
             { id: 'users',   label: 'Users',   icon: Users },
             { id: 'roles',   label: 'Roles & Permissions', icon: Check },
+            { id: 'notifications', label: 'Notifications', icon: Link },
           ] : []}
           activeTab={activeTab}
           onTab={setActiveTab}
@@ -221,6 +287,8 @@ function SettingsApp() {
             <window.UsersTab onToast={fireToast} />
           ) : activeTab === 'roles' ? (
             <window.RolesTab onToast={fireToast} />
+          ) : activeTab === 'notifications' ? (
+            <NotificationsTab onToast={fireToast} />
           ) : (
             <div style={{ maxWidth: 780, margin: '0 auto', padding: '24px 24px 120px' }}>
               {activeTab === 'general'

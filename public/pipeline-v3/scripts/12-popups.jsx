@@ -1458,18 +1458,69 @@ window.DesignReleaseRouteModal = DesignReleaseRouteModal;
 // ============================================================
 function NotificationsPopover({ anchorRect, onClose, onMarkAllRead }) {
   const { Bell } = window.Icons;
+  const [rows, setRows] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const notify = () => window.dispatchEvent(new Event('notifications:refresh'));
+  const load = () => window.api.get('/notifications')
+    .then(d => setRows(d?.notifications || []))
+    .catch(() => setRows([]));
+  React.useEffect(() => { load(); }, []);
+
+  const rel = (ts) => {
+    if (!ts) return '';
+    const d = new Date(ts.replace(' ', 'T') + (/[zZ]|[+-]\d\d:?\d\d$/.test(ts) ? '' : 'Z'));
+    const s = Math.max(0, (Date.now() - d.getTime()) / 1000);
+    if (s < 60) return 'just now';
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+    return `${Math.floor(s / 86400)}d ago`;
+  };
+  const markRead = async (n) => {
+    if (n.is_read) return;
+    setRows(rs => rs.map(x => x.id === n.id ? { ...x, is_read: 1 } : x));
+    notify();
+    try { await window.api.put(`/notifications/${n.id}/read`); } catch {}
+  };
+  const markAll = async () => {
+    setBusy(true);
+    setRows(rs => (rs || []).map(x => ({ ...x, is_read: 1 })));
+    try { await window.api.put('/notifications/read-all'); onMarkAllRead && onMarkAllRead(); }
+    catch {} finally { setBusy(false); notify(); }
+  };
+  const anyUnread = (rows || []).some(n => !n.is_read);
+
   return (
-    <Popover anchorRect={anchorRect} onClose={onClose} width={360} align="right">
+    <Popover anchorRect={anchorRect} onClose={onClose} width={380} align="right">
       <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <span style={{ fontSize: 13, fontWeight: 700 }}>Notifications</span>
+        {anyUnread && <button onClick={markAll} disabled={busy} style={{ border: 'none', background: 'transparent', color: 'var(--img-orange-700, #B8680E)', fontSize: 11.5, fontWeight: 600, cursor: 'pointer' }}>Mark all read</button>}
       </div>
-      <div style={{ padding: '32px 24px', textAlign: 'center', color: 'var(--fg-tertiary)' }}>
-        <Bell size={28} style={{ opacity: 0.4, marginBottom: 10 }} />
-        <div style={{ fontSize: 12.5, lineHeight: 1.5 }}>
-          You're all caught up.<br />
-          Notifications will appear here as deals are updated.
+      {rows == null ? (
+        <div style={{ padding: '24px', textAlign: 'center', color: 'var(--fg-tertiary)', fontSize: 12.5 }}>Loading…</div>
+      ) : rows.length === 0 ? (
+        <div style={{ padding: '32px 24px', textAlign: 'center', color: 'var(--fg-tertiary)' }}>
+          <Bell size={28} style={{ opacity: 0.4, marginBottom: 10 }} />
+          <div style={{ fontSize: 12.5, lineHeight: 1.5 }}>You're all caught up.<br />Notifications appear here as deals are updated.</div>
         </div>
-      </div>
+      ) : (
+        <div style={{ maxHeight: 360, overflowY: 'auto' }}>
+          {rows.map(n => (
+            <button key={n.id} onClick={() => markRead(n)} style={{
+              display: 'flex', gap: 10, width: '100%', textAlign: 'left', padding: '10px 14px',
+              border: 'none', borderBottom: '1px solid var(--border-subtle)', cursor: 'pointer',
+              background: n.is_read ? 'transparent' : 'var(--img-orange-50, #FFF7EE)',
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover, #f5f5f5)'}
+            onMouseLeave={e => e.currentTarget.style.background = n.is_read ? 'transparent' : 'var(--img-orange-50, #FFF7EE)'}>
+              <span style={{ width: 7, height: 7, borderRadius: '50%', marginTop: 5, flexShrink: 0, background: n.is_read ? 'transparent' : 'var(--img-orange)' }} />
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ display: 'block', fontSize: 12.5, color: 'var(--fg-primary)', fontWeight: n.is_read ? 400 : 600, lineHeight: 1.4 }}>{n.message}</span>
+                <span style={{ fontSize: 10.5, color: 'var(--fg-tertiary)' }}>{rel(n.created_at)}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
     </Popover>
   );
 }

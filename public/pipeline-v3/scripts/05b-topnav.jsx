@@ -6,6 +6,19 @@
 function TopNav({ active = 'pipeline', onNav, onUserMenu, onNotifications }) {
   const { Briefcase, Users, Trend, Sparkle, Edit, Layers, Bell, Settings } = window.Icons;
 
+  // Live unread-notification count for the bell badge (see Sidebar for the twin).
+  const [unread, setUnread] = React.useState(0);
+  React.useEffect(() => {
+    let alive = true;
+    const load = () => window.api?.get?.('/notifications')
+      .then(d => { if (alive) setUnread(d?.unread || 0); }).catch(() => {});
+    load();
+    const h = () => load();
+    window.addEventListener('notifications:refresh', h);
+    const iv = setInterval(load, 60000);
+    return () => { alive = false; window.removeEventListener('notifications:refresh', h); clearInterval(iv); };
+  }, []);
+
   // Grouped so we can draw a faint divider between sections, like the sidebar.
   const GROUPS = [
     [
@@ -86,7 +99,9 @@ function TopNav({ active = 'pipeline', onNav, onUserMenu, onNotifications }) {
         onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.10)'}
         onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
           <Bell size={17} />
-          <span style={{ position: 'absolute', top: 7, right: 7, width: 7, height: 7, borderRadius: '50%', background: 'var(--img-orange)', border: '1.5px solid var(--img-green-800)' }}></span>
+          {unread > 0 && (
+            <span className="t-num" style={{ position: 'absolute', top: 3, right: 3, minWidth: 15, height: 15, padding: '0 3px', borderRadius: 999, background: 'var(--img-orange)', color: '#fff', border: '1.5px solid var(--img-green-800)', fontSize: 9, fontWeight: 800, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}>{unread > 9 ? '9+' : unread}</span>
+          )}
         </button>
 
         <button onClick={e => onUserMenu?.(e.currentTarget.getBoundingClientRect())} title={`${u.name} — ${u.role}`} style={{

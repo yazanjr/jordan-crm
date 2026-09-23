@@ -74,6 +74,8 @@ window.adaptDesignRequest = function adaptDesignRequest(r) {
       reviewNotes:   q.review_notes,
       designerNotes: q.designer_notes,
       lineItems:     q.line_items || [],
+      files:         q.files || [],
+      installation:  q.installation || null,
     })),
     revisionNotes: latest?.review_status === 'Revision Requested' ? latest.review_notes : '',
     approvedAt:    latest?.review_status === 'Approved' ? latest.reviewed_at : null,

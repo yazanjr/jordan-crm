@@ -11,6 +11,7 @@ const path    = require('path');
 const fs      = require('fs');
 const db      = require('../database/db');
 const demoAuth = require('../middleware/demoAuth');
+const INST = require('../utils/installation');
 const { requireRole } = demoAuth;
 
 const router = express.Router();
@@ -54,14 +55,12 @@ const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
 // ---------------------------------------------------------------------------
 
 // Notify a user (DB row + socket emit). Reused for every trigger.
-function notify(io, userIds, type, message, requestId) {
-  if (!io) return;
-  const insert = db.prepare(`INSERT INTO notifications (user_id, type, message) VALUES (?, ?, ?)`);
-  const unique = [...new Set(userIds.filter(Boolean))];
-  unique.forEach(uid => {
-    insert.run(uid, type, message);
-    io.to(`user:${uid}`).emit('notification', { type, message, requestId });
-  });
+// Who actually receives it is decided by utils/notifications.js (Settings →
+// Notifications): the ids passed here are the "involved people" of the event;
+// roles are added from the rules; the actor is never notified.
+const NOTIF = require('../utils/notifications');
+function notify(req, userIds, type, message, requestId) {
+  return NOTIF.send(req.io, req.user && req.user.id, userIds, type, message, { requestId });
 }
 
 // Users with a given role (used for fan-out notifications to all design managers etc.).
@@ -118,7 +117,14 @@ function canViewCosts(user) {
   return user && (user.can_view_costs === 1 || user.role === 'admin' || user.role === 'product_manager');
 }
 function redactRequestForUser(enrichedReq, user) {
-  if (!enrichedReq || canViewCosts(user)) return enrichedReq;
+  if (!enrichedReq) return enrichedReq;
+  // Drafts are private: hide anyone else's Draft versions (any viewer, incl. PMs).
+  if (Array.isArray(enrichedReq.quotations)) {
+    const uid = user && user.id;
+    const visible = enrichedReq.quotations.filter(q => q.review_status !== 'Draft' || q.created_by === uid);
+    if (visible.length !== enrichedReq.quotations.length) enrichedReq = { ...enrichedReq, quotations: visible };
+  }
+  if (canViewCosts(user)) return enrichedReq;
   const out = { ...enrichedReq };
   if (Array.isArray(out.quotations)) {
     out.quotations = out.quotations.map(q => ({
@@ -159,12 +165,13 @@ function enrich(r) {
     ? db.prepare(`SELECT id, name FROM users WHERE id = ?`).get(r.assigned_reviewer_id)
     : null;
   const quotes = db.prepare(`
-    SELECT id, version_number, total_value, files, designer_notes,
+    SELECT id, version_number, total_value, files, designer_notes, created_by,
            review_status, review_notes, submitted_at, reviewed_at, released_at,
            discount_pct_global, target_release_stage, reference,
            project_name, city, project_type, pricing_mode,
            sales_engineer_name, design_engineer_name, brand,
-           intro_text, maintenance_text, tnc_text, revision_type, parent_version_id
+           intro_text, maintenance_text, tnc_text, revision_type, parent_version_id, installation_json,
+           warranty_years, pm_years, pm_visits_per_year
     FROM quotation_versions WHERE request_id = ? ORDER BY version_number
   `).all(r.id).map(q => {
     const line_items = db.prepare(`
@@ -172,7 +179,10 @@ function enrich(r) {
              list_price, discount_pct, unit_price, subtotal, is_override, cost_snapshot
       FROM quotation_line_items WHERE quotation_version_id = ? ORDER BY line_num
     `).all(q.id);
-    return { ...q, files: JSON.parse(q.files || '[]'), line_items };
+    // Only the designer's installation INPUTS go to the client (the stored calc holds cost).
+    const { installation_json, ...qq } = q;
+    const installation = (safeJsonParse(installation_json, null) || {}).inputs || null;
+    return { ...qq, files: JSON.parse(q.files || '[]'), line_items, installation };
   });
   return {
     ...r,
@@ -188,7 +198,8 @@ function enrich(r) {
     reviewer_name: reviewer?.name || null,
     requested_by_name: requester?.name || null,
     quotations:   quotes,
-    latest_quotation: quotes[quotes.length - 1] || null,
+    // "latest" = newest NON-draft (official) version; drafts never count here.
+    latest_quotation: quotes.filter(q => q.review_status !== 'Draft').slice(-1)[0] || null,
   };
 }
 
@@ -268,8 +279,7 @@ router.post('/design-requests', (req, res) => {
   moveOppToLead(opportunity_id, req.user.id, 'Design requested');
 
   // Notify Design Manager + Sales Manager
-  const recipients = [...usersWithRole('design_manager'), ...usersWithRole('sales_manager')];
-  notify(req.io, recipients, 'design_request_created',
+  notify(req, [], 'design_request_created',
     `${req.user.name} requested design for "${opp.title}"`, requestId);
 
   res.status(201).json(redactRequestForUser(getRequest(requestId), req.user));
@@ -340,10 +350,10 @@ router.post('/design-requests/:id/assign',
     }
 
     const opp = db.prepare(`SELECT title FROM opportunities WHERE id = ?`).get(r.opportunity_id);
-    notify(req.io, [designer_id], 'design_assigned',
+    notify(req, [designer_id], 'design_assigned',
       `You've been assigned design work on "${opp?.title}"`, id);
     if (assigned_reviewer_id && assigned_reviewer_id !== req.user.id) {
-      notify(req.io, [assigned_reviewer_id], 'design_review_assigned',
+      notify(req, [assigned_reviewer_id], 'design_review_assigned',
         `You're the reviewer on "${opp?.title}"`, id);
     }
 
@@ -363,6 +373,28 @@ const ALLOWED_TRANSITIONS = {
   'Review':      ['Approved', 'In Progress'],           // sally approves OR revises
   'Approved':    ['Released'],                          // sally releases
 };
+
+// PATCH /api/design-requests/:id/urgency  { urgency }
+//   The assigned designer (or a manager/admin) can adjust urgency after the
+//   salesman set it. Updates the column (the pill source) + the form_data mirror.
+router.patch('/design-requests/:id/urgency', (req, res) => {
+  const id = +req.params.id;
+  const r = db.prepare(`SELECT * FROM design_requests WHERE id = ?`).get(id);
+  if (!r) return res.status(404).json({ error: 'Request not found.' });
+  const urgency = String(req.body.urgency || '').trim();
+  if (!['Standard', 'Urgent', 'Critical'].includes(urgency)) {
+    return res.status(400).json({ error: 'urgency must be Standard, Urgent, or Critical.' });
+  }
+  const isDesignerOnTask = r.assigned_designer_id === req.user.id;
+  const isManager = ['design_manager', 'admin'].includes(req.user.role);
+  if (!isDesignerOnTask && !isManager) {
+    return res.status(403).json({ error: 'Only the assigned designer or a manager can change urgency.' });
+  }
+  const fd = safeJsonParse(r.form_data, {});
+  fd.urgency = urgency;
+  db.prepare(`UPDATE design_requests SET urgency = ?, form_data = ? WHERE id = ?`).run(urgency, JSON.stringify(fd), id);
+  res.json({ ok: true, id, urgency });
+});
 
 router.put('/design-requests/:id/stage', (req, res) => {
   const id = +req.params.id;
@@ -445,28 +477,24 @@ router.put('/design-requests/:id/stage', (req, res) => {
   // Notifications per transition
   const opp = db.prepare(`SELECT title, salesman_id FROM opportunities WHERE id = ?`).get(r.opportunity_id);
   if (r.design_stage === 'Queued' && stage === 'In Progress') {
-    notify(req.io, usersWithRole('design_manager'), 'design_started',
+    notify(req, [], 'design_started',
       `${req.user.name} started work on "${opp?.title}"`, id);
   } else if (r.design_stage === 'In Progress' && stage === 'Review') {
     // Notify ALL design managers + the specific assigned reviewer (Phase 8.1).
-    const submitRecipients = new Set(usersWithRole('design_manager'));
-    if (r.assigned_reviewer_id) submitRecipients.add(r.assigned_reviewer_id);
-    notify(req.io, [...submitRecipients], 'design_submitted',
+    notify(req, [r.assigned_reviewer_id], 'design_submitted',
       `${req.user.name} submitted "${opp?.title}" for review`, id);
   } else if (r.design_stage === 'Review' && stage === 'In Progress') {
-    notify(req.io, [r.assigned_designer_id], 'design_revision_requested',
+    notify(req, [r.assigned_designer_id], 'design_revision_requested',
       `Revision requested on "${opp?.title}"${notes ? ': ' + notes : ''}`, id);
   } else if (r.design_stage === 'Review' && stage === 'Approved') {
     // Phase 8.1 — Approval auto-releases. Notify designer (approved + released),
     // salesman (quotation ready), and Sally (status update).
-    notify(req.io, [r.assigned_designer_id], 'design_approved',
+    notify(req, [r.assigned_designer_id], 'design_approved',
       `Your design for "${opp?.title}" was approved and released`, id);
-    notify(req.io, [opp?.salesman_id], 'design_released',
-      `Quotation ready for "${opp?.title}"`, id);
-    notify(req.io, usersWithRole('design_manager').filter(uid => uid !== req.user.id), 'design_released',
-      `"${opp?.title}" was approved & released by ${req.user.name}`, id);
+    notify(req, [opp?.salesman_id], 'design_released',
+      `Quotation ready for "${opp?.title}" — approved & released by ${req.user.name}`, id);
   } else if (r.design_stage === 'Approved' && stage === 'Released') {
-    notify(req.io, [opp?.salesman_id], 'design_released',
+    notify(req, [opp?.salesman_id], 'design_released',
       `Quotation ready for "${opp?.title}"`, id);
   }
 
@@ -499,7 +527,7 @@ router.post('/design-requests/:id/return',
     moveOppToStage(r.opportunity_id, 'Prospect', req.user.id, 'Design returned by Sally');
 
     const opp = db.prepare(`SELECT title, salesman_id FROM opportunities WHERE id = ?`).get(r.opportunity_id);
-    notify(req.io, [opp?.salesman_id], 'design_returned',
+    notify(req, [opp?.salesman_id], 'design_returned',
       `Design returned on "${opp?.title}": ${reason}`, id);
 
     res.json(redactRequestForUser(getRequest(id), req.user));
@@ -580,7 +608,7 @@ router.post('/design-requests/:id/revision', (req, res) => {
   // Phase 1: a modification request also moves the deal back to Design/Redesign.
   moveOppToLead(prior.opportunity_id, req.user.id, 'Modification requested');
 
-  notify(req.io, [...usersWithRole('design_manager'), ...usersWithRole('sales_manager')],
+  notify(req, [],
     'design_modification_requested',
     `${req.user.name} requested a modification on "${opp.title}" (V${(prior.version || 1) + 1})`, newId);
 
@@ -609,6 +637,10 @@ router.post('/quotation-versions', (req, res) => {
   const isManager  = ['design_manager', 'admin'].includes(req.user.role);
   if (!isAssigned && !isManager) return res.status(403).json({ error: 'Only the assigned designer can submit a quotation.' });
 
+  // Drafts: saved privately by the designer, not submitted for review. No stage
+  // change, no manager notification, and the discount cap is enforced at submit.
+  const asDraft = !!req.body.as_draft;
+
   // ── Discount limit (Phase 8). At or below the configurable limit applies
   //   immediately; above it needs an APPROVED discount override on the deal
   //   (raised via /approvals). Covers the global discount and any per-line one.
@@ -621,7 +653,7 @@ router.post('/quotation-versions', (req, res) => {
     return res.status(400).json({ error: 'Discount cannot be negative.' });
   }
   const _limit = discountLimitFraction();
-  if (maxDiscount > _limit + 1e-9 && !hasApprovedDiscount(r.opportunity_id, maxDiscount)) {
+  if (!asDraft && maxDiscount > _limit + 1e-9 && !hasApprovedDiscount(r.opportunity_id, maxDiscount)) {
     return res.status(400).json({
       error: `Discount ${(maxDiscount * 100).toFixed(1)}% exceeds the ${(_limit * 100).toFixed(0)}% limit and needs Sales Manager approval.`,
       needs_approval: true,
@@ -632,7 +664,9 @@ router.post('/quotation-versions', (req, res) => {
   }
 
   // ── Build line items. SKU-linked items snapshot list_price + cost.
-  const items = Array.isArray(line_items) ? line_items : [];
+  const opp0 = db.prepare(`SELECT segment FROM opportunities WHERE id = ?`).get(r.opportunity_id) || {};
+  const _inst = applyInstallation(line_items, req.body.installation, { ...(header || {}), project_type: (header || {}).project_type || opp0.segment || '' }, globalDiscount);
+  const items = _inst.items;
   let total = 0;
   const normalized = items.map((it, idx) => {
     let sku = null;
@@ -641,16 +675,16 @@ router.post('/quotation-versions', (req, res) => {
     const discount_pct = it.discount_pct != null ? Number(it.discount_pct) : globalDiscount;
     // Designer can override unit_price; if blank, compute from list × (1-discount).
     let unit_price = it.unit_price != null && it.unit_price !== '' ? Number(it.unit_price) : null;
-    if (unit_price == null && list_price != null) unit_price = +(list_price * (1 - discount_pct)).toFixed(2);
+    if (unit_price == null && list_price != null) unit_price = INST.netOf(list_price, discount_pct);
     if (unit_price == null) unit_price = 0;
-    const is_override = sku && list_price && Math.abs(unit_price - list_price * (1 - discount_pct)) > 0.5 ? 1 : 0;
+    const is_override = sku && list_price && Math.abs(unit_price - INST.netOf(list_price, discount_pct)) > 0.5 ? 1 : 0;
     const qty = Number(it.qty) || 0;
     const subtotal = +(qty * unit_price).toFixed(2);
     total += subtotal;
     return {
       line_num: idx + 1,
       sku_id: sku ? sku.id : null,
-      category: it.category || (sku ? sku.category : null),
+      category: it.category || (sku ? (sku.quote_section || sku.category) : null),
       model: it.model || (sku ? sku.model : null),
       description: it.description != null ? it.description : (sku ? sku.description : null),
       qty,
@@ -660,7 +694,7 @@ router.post('/quotation-versions', (req, res) => {
       unit_price,
       subtotal,
       is_override,
-      cost_snapshot: sku ? sku.cost_jod : null,
+      cost_snapshot: sku ? sku.cost_jod : (it._cost != null ? Number(it._cost) : null),
     };
   });
   const totalValue = items.length ? +total.toFixed(2) : (Number(req.body.total_value) || 0);
@@ -683,6 +717,9 @@ router.post('/quotation-versions', (req, res) => {
   const intro_text       = h.intro_text       || null;
   const maintenance_text = h.maintenance_text || null;
   const tnc_text         = h.tnc_text         || null;
+  const warranty_years   = h.warranty_years != null && h.warranty_years !== '' ? Number(h.warranty_years) : 1;
+  const pm_years         = h.pm_years != null && h.pm_years !== '' ? Number(h.pm_years) : 1;
+  const pm_visits        = h.pm_visits_per_year != null && h.pm_visits_per_year !== '' ? Number(h.pm_visits_per_year) : 1;
 
   const info = db.prepare(`
     INSERT INTO quotation_versions (
@@ -690,16 +727,20 @@ router.post('/quotation-versions', (req, res) => {
       created_by, review_status,
       reference, quote_date, project_name, city, project_type, pricing_mode,
       sales_engineer_name, design_engineer_name, brand,
-      intro_text, maintenance_text, tnc_text, discount_pct_global, target_release_stage
-    ) VALUES (?, ?, ?, ?, ?, ?, 'Submitted',
-              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      intro_text, maintenance_text, tnc_text, discount_pct_global, target_release_stage,
+      warranty_years, pm_years, pm_visits_per_year
+    ) VALUES (?, ?, ?, ?, ?, ?, ?,
+              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     request_id, nextVer, totalValue, JSON.stringify(files || []), designer_notes || null, req.user.id,
+    asDraft ? 'Draft' : 'Submitted',
     reference, quote_date, project_name, city, project_type, pricing_mode,
     sales_engineer, design_engineer, brand,
-    intro_text, maintenance_text, tnc_text, globalDiscount, target_release_stage || null
+    intro_text, maintenance_text, tnc_text, globalDiscount, target_release_stage || null,
+    warranty_years, pm_years, pm_visits
   );
   const quotationId = info.lastInsertRowid;
+  if (_inst.json) db.prepare(`UPDATE quotation_versions SET installation_json = ? WHERE id = ?`).run(_inst.json, quotationId);
 
   if (normalized.length) {
     const insertItem = db.prepare(`
@@ -721,16 +762,180 @@ router.post('/quotation-versions', (req, res) => {
     }
   }
 
-  notify(req.io, usersWithRole('design_manager'), 'quotation_submitted',
-    `V${nextVer} submitted for review (JOD ${totalValue.toLocaleString()})`, request_id);
+  if (!asDraft) {
+    notify(req, [], 'quotation_submitted',
+      `V${nextVer} submitted for review (JOD ${totalValue.toLocaleString()})`, request_id);
+  }
 
   res.status(201).json({
     id: quotationId, request_id, version_number: nextVer,
     total_value: totalValue, files: files || [], designer_notes,
-    line_items: normalized, review_status: 'Submitted',
+    line_items: normalized, review_status: asDraft ? 'Draft' : 'Submitted',
     reference, project_name, city, project_type, pricing_mode,
     brand, discount_pct_global: globalDiscount,
   });
+});
+
+// ── VRF installation (moved in from the offer file's "Installation Price" sheet).
+// The editor sends only the designer's INPUTS; the server counts the units from
+// the quotation lines, computes price + cost, and appends ONE computed line
+// (model INSTALL-VRF) so totals, discounts, costing and exports all include it.
+const { pricingLabel } = require('../utils/quotationXlsm');
+function withSkuSection(items) {
+  const bySku = db.prepare(`SELECT section, quote_section FROM product_skus WHERE id = ?`);
+  return (Array.isArray(items) ? items : []).map((it) => {
+    const sku = it.sku_id ? bySku.get(+it.sku_id) : null;
+    return { ...it, sku_section: sku ? sku.section : null, category: it.category || (sku ? sku.quote_section : null) };
+  });
+}
+function computeInstallationFor(items, installation, header, discount) {
+  const inputs = installation && typeof installation === 'object' ? installation : {};
+  const lines = withSkuSection(items).filter(it => it.model !== INST.INSTALL_MODEL && it.model !== INST.SPLIT_COPPER_MODEL);
+  // VRF equipment list total = Outdoor + Indoor + Controllers (Sum(Total) D8:D10) → warranty cost base.
+  const equipTotal = lines.filter(it => it.category === 'VRF System' && INST.vrfKind(it.sku_section, it.description) !== 'separation')
+    .reduce((a, it) => a + (Number(it.qty) || 0) * (Number(it.list_price) || 0), 0);
+  const auto = INST.countUnits(lines);
+  const ov = inputs.count_overrides || {};
+  const counts = Object.fromEntries(Object.keys(auto).map(k => [k, ov[k] != null && ov[k] !== '' ? Number(ov[k]) : auto[k]]));
+  const h = header || {};
+  const P = INST.loadParams(db);
+  const ctx = { pricing: pricingLabel(h.pricing_mode), city: h.city || '', discount: Number(discount) || 0, equipTotal, projectType: h.project_type || '', brand: h.brand || 'Gree' };
+  const result = INST.computeInstallation({ ...inputs, counts, warranty_years: h.warranty_years ?? 1, pm_years: h.pm_years ?? 1, pm_visits_per_year: h.pm_visits_per_year ?? 1 }, ctx, P);
+  const split_copper = INST.computeSplitCopper(inputs.split_copper_m, ctx, P);
+  return { inputs, auto_counts: auto, result, split_copper };
+}
+// Returns { items (with the computed line appended when enabled), json (to store) }.
+function applyInstallation(items, installation, header, discount) {
+  const clean = (Array.isArray(items) ? items : []).filter(it => it.model !== INST.INSTALL_MODEL && it.model !== INST.SPLIT_COPPER_MODEL).map(({ _cost, ...it }) => it);
+  if (!installation) return { items: clean, json: null };
+  const calc = computeInstallationFor(clean, installation, header, discount);
+  const d = Number(discount) || 0;
+  if (installation.enabled && calc.result.price > 0) {
+    // Installation cost carries the project costs too (warranty + PM visits) so Costing sees them.
+    const cost = calc.result.cost_total + (calc.result.cost.warranty || 0) + (calc.result.cost.pm_visits || 0);
+    clean.push({ category: 'Installation', model: INST.INSTALL_MODEL, description: INST.INSTALL_DESCRIPTION,
+      qty: 1, unit: 'LS', list_price: calc.result.price, unit_price: calc.result.net, discount_pct: d, _cost: +cost.toFixed(2) });
+  }
+  if (calc.split_copper.metres > 0) {
+    clean.push({ category: 'Copper', model: INST.SPLIT_COPPER_MODEL, description: INST.SPLIT_COPPER_DESCRIPTION,
+      qty: calc.split_copper.metres, unit: 'm', list_price: calc.split_copper.unit_price, unit_price: calc.split_copper.unit_net, discount_pct: d, _cost: calc.split_copper.unit_cost });
+  }
+  return { items: clean, json: JSON.stringify(calc) };
+}
+router.post('/installation/preview', (req, res) => {
+  const { line_items, installation, header } = req.body || {};
+  const calc = computeInstallationFor(line_items, installation, header, req.body.discount_pct_global);
+  const canCost = req.user.can_view_costs === 1 || ['admin', 'product_manager'].includes(req.user.role);
+  if (!canCost) { delete calc.result.cost; delete calc.result.cost_total; delete calc.split_copper.unit_cost; delete calc.split_copper.cost; }
+  res.json(calc);
+});
+
+// Normalize incoming line items into stored rows (SKU snapshot of price + cost).
+function computeQuotationLines(items, globalDiscount) {
+  let total = 0;
+  const normalized = (Array.isArray(items) ? items : []).map((it, idx) => {
+    let sku = null;
+    if (it.sku_id) sku = db.prepare(`SELECT * FROM product_skus WHERE id = ?`).get(+it.sku_id) || null;
+    const list_price = it.list_price != null ? Number(it.list_price) : (sku ? sku.list_price : null);
+    const discount_pct = it.discount_pct != null ? Number(it.discount_pct) : globalDiscount;
+    let unit_price = it.unit_price != null && it.unit_price !== '' ? Number(it.unit_price) : null;
+    if (unit_price == null && list_price != null) unit_price = INST.netOf(list_price, discount_pct);
+    if (unit_price == null) unit_price = 0;
+    const is_override = sku && list_price && Math.abs(unit_price - INST.netOf(list_price, discount_pct)) > 0.5 ? 1 : 0;
+    const qty = Number(it.qty) || 0;
+    const subtotal = +(qty * unit_price).toFixed(2);
+    total += subtotal;
+    return {
+      line_num: idx + 1, sku_id: sku ? sku.id : null,
+      category: it.category || (sku ? (sku.quote_section || sku.category) : null),
+      model: it.model || (sku ? sku.model : null),
+      description: it.description != null ? it.description : (sku ? sku.description : null),
+      qty, unit: it.unit || (sku ? sku.unit : null) || 'pc',
+      list_price, discount_pct, unit_price, subtotal, is_override,
+      cost_snapshot: sku ? sku.cost_jod : (it._cost != null ? Number(it._cost) : null),
+    };
+  });
+  return { normalized, total: +total.toFixed(2) };
+}
+
+// ---------------------------------------------------------------------------
+// PUT /api/quotation-versions/:id  — update a DRAFT in place (header + lines).
+//   Only the draft's creator (or a manager/admin) may edit, and only while it
+//   is still a Draft. Submitted/approved versions are immutable here.
+// ---------------------------------------------------------------------------
+router.put('/quotation-versions/:id', (req, res) => {
+  const id = +req.params.id;
+  const q = db.prepare(`SELECT * FROM quotation_versions WHERE id = ?`).get(id);
+  if (!q) return res.status(404).json({ error: 'Quotation not found.' });
+  if (q.review_status !== 'Draft') return res.status(400).json({ error: 'Only a draft can be edited.' });
+  if (q.created_by !== req.user.id && !['design_manager', 'admin'].includes(req.user.role))
+    return res.status(403).json({ error: 'You can only edit your own draft.' });
+
+  const { files, designer_notes, line_items, header, discount_pct_global, target_release_stage } = req.body;
+  const globalDiscount = Number(discount_pct_global) || 0;
+  const _inst = applyInstallation(line_items, req.body.installation, { ...(header || {}), pricing_mode: (header || {}).pricing_mode || q.pricing_mode, city: (header || {}).city || q.city, project_type: (header || {}).project_type || q.project_type, brand: (header || {}).brand || q.brand }, globalDiscount);
+  const { normalized, total } = computeQuotationLines(_inst.items, globalDiscount);
+  const totalValue = _inst.items.length ? total : (Number(req.body.total_value) || 0);
+  const h = header || {};
+  db.exec('BEGIN');
+  try {
+    db.prepare(`UPDATE quotation_versions SET
+        total_value=?, files=?, designer_notes=?, reference=?, quote_date=?, project_name=?, city=?,
+        project_type=?, pricing_mode=?, sales_engineer_name=?, design_engineer_name=?, brand=?,
+        intro_text=?, maintenance_text=?, tnc_text=?, discount_pct_global=?, target_release_stage=?,
+        warranty_years=?, pm_years=?, pm_visits_per_year=?
+      WHERE id=?`).run(
+      totalValue, files != null ? JSON.stringify(files) : q.files, designer_notes != null ? designer_notes : q.designer_notes,
+      h.reference || q.reference, h.quote_date || q.quote_date, h.project_name || q.project_name, h.city || q.city,
+      h.project_type || q.project_type, h.pricing_mode || q.pricing_mode,
+      h.sales_engineer_name || q.sales_engineer_name, h.design_engineer_name || q.design_engineer_name, h.brand || q.brand,
+      h.intro_text != null ? h.intro_text : q.intro_text, h.maintenance_text != null ? h.maintenance_text : q.maintenance_text,
+      h.tnc_text != null ? h.tnc_text : q.tnc_text, globalDiscount, target_release_stage || q.target_release_stage,
+      h.warranty_years != null && h.warranty_years !== '' ? Number(h.warranty_years) : q.warranty_years,
+      h.pm_years != null && h.pm_years !== '' ? Number(h.pm_years) : q.pm_years,
+      h.pm_visits_per_year != null && h.pm_visits_per_year !== '' ? Number(h.pm_visits_per_year) : q.pm_visits_per_year, id);
+    db.prepare(`UPDATE quotation_versions SET installation_json = ? WHERE id = ?`).run(_inst.json, id);
+    db.prepare(`DELETE FROM quotation_line_items WHERE quotation_version_id = ?`).run(id);
+    const insertItem = db.prepare(`INSERT INTO quotation_line_items
+        (quotation_version_id, line_num, sku_id, category, model, description, qty, unit,
+         list_price, discount_pct, unit_price, subtotal, is_override, cost_snapshot)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    for (const it of normalized) insertItem.run(id, it.line_num, it.sku_id, it.category, it.model, it.description,
+      it.qty, it.unit, it.list_price, it.discount_pct, it.unit_price, it.subtotal, it.is_override, it.cost_snapshot);
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); return res.status(500).json({ error: e.message }); }
+  res.json({ ok: true, id, version_number: q.version_number, total_value: totalValue, review_status: 'Draft' });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/quotation-versions/:id/submit  — promote a DRAFT to Submitted.
+//   Re-checks the discount cap, flips status, notifies managers. (The caller
+//   also moves the request stage In Progress → Review, as with a fresh submit.)
+// ---------------------------------------------------------------------------
+router.post('/quotation-versions/:id/submit', (req, res) => {
+  const id = +req.params.id;
+  const q = db.prepare(`SELECT * FROM quotation_versions WHERE id = ?`).get(id);
+  if (!q) return res.status(404).json({ error: 'Quotation not found.' });
+  if (q.review_status !== 'Draft') return res.status(400).json({ error: 'Only a draft can be submitted.' });
+  const r = db.prepare(`SELECT * FROM design_requests WHERE id = ?`).get(q.request_id);
+  if (!r) return res.status(404).json({ error: 'Request not found.' });
+  if (q.created_by !== req.user.id && !['design_manager', 'admin'].includes(req.user.role))
+    return res.status(403).json({ error: 'You can only submit your own draft.' });
+
+  const lines = db.prepare(`SELECT discount_pct FROM quotation_line_items WHERE quotation_version_id = ?`).all(id);
+  const globalDiscount = Number(q.discount_pct_global) || 0;
+  const maxDiscount = lines.reduce((m, l) => Math.max(m, l.discount_pct != null ? Number(l.discount_pct) : globalDiscount), globalDiscount);
+  const _limit = discountLimitFraction();
+  if (maxDiscount > _limit + 1e-9 && !hasApprovedDiscount(r.opportunity_id, maxDiscount)) {
+    return res.status(400).json({
+      error: `Discount ${(maxDiscount * 100).toFixed(1)}% exceeds the ${(_limit * 100).toFixed(0)}% limit and needs Sales Manager approval.`,
+      needs_approval: true, requested_pct: +(maxDiscount * 100).toFixed(2), opp_id: r.opportunity_id, quotation_id: id,
+    });
+  }
+  db.prepare(`UPDATE quotation_versions SET review_status='Submitted', submitted_at=datetime('now') WHERE id=?`).run(id);
+  notify(req, [], 'quotation_submitted',
+    `V${q.version_number} submitted for review (JOD ${Number(q.total_value).toLocaleString()})`, q.request_id);
+  res.json({ ok: true, id, review_status: 'Submitted', version_number: q.version_number });
 });
 
 // ---------------------------------------------------------------------------
@@ -765,10 +970,10 @@ router.put('/quotation-versions/:id/review',
       logStageChange(r.id, 'Review', newStage, req.user.id, review_notes);
       const opp = db.prepare(`SELECT title FROM opportunities WHERE id = ?`).get(r.opportunity_id);
       if (review_status === 'Approved') {
-        notify(req.io, [r.assigned_designer_id], 'design_approved',
+        notify(req, [r.assigned_designer_id], 'design_approved',
           `Your design for "${opp?.title}" was approved`, r.id);
       } else {
-        notify(req.io, [r.assigned_designer_id], 'design_revision_requested',
+        notify(req, [r.assigned_designer_id], 'design_revision_requested',
           `Revision requested on "${opp?.title}"${review_notes ? ': ' + review_notes : ''}`, r.id);
       }
     }
@@ -879,7 +1084,7 @@ router.post('/quotation-versions/:id/scenarios', (req, res) => {
     const o = overrides[li.id] || {};
     const qty        = o.qty != null ? +o.qty : li.qty;
     const unit_price = o.unit_price != null ? +o.unit_price
-                     : (o.discount_pct != null && li.list_price ? +(li.list_price * (1 - o.discount_pct)).toFixed(2) : li.unit_price);
+                     : (o.discount_pct != null && li.list_price ? INST.netOf(li.list_price, o.discount_pct) : li.unit_price);
     const cost_unit  = li.cost_snapshot != null ? +li.cost_snapshot : 0;
     totalCost    += (qty || 0) * cost_unit;
     totalRevenue += (qty || 0) * (unit_price || 0);
@@ -967,7 +1172,7 @@ router.post('/quotation-versions/:id/sales-revision', (req, res) => {
   const normalized = resolved.map((entry, idx) => {
     const li = entry.src;
     const d  = entry.discount_pct;
-    const unit_price = li.list_price ? +(li.list_price * (1 - d)).toFixed(2) : li.unit_price;
+    const unit_price = li.list_price ? INST.netOf(li.list_price, d) : li.unit_price;
     const qty = li.qty || 0;
     const subtotal = +(qty * unit_price).toFixed(2);
     total += subtotal;
@@ -1024,8 +1229,7 @@ router.post('/quotation-versions/:id/sales-revision', (req, res) => {
 
     db.exec('COMMIT');
 
-    notify(req.io, [parentReq.assigned_designer_id, parentReq.assigned_reviewer_id, ...usersWithRole('design_manager'), ...usersWithRole('product_manager')]
-      .filter(uid => uid && uid !== req.user.id),
+    notify(req, [parentReq.assigned_designer_id, parentReq.assigned_reviewer_id],
       'sales_revision',
       `${req.user.name} revised the discount on "${opp.title}" (now ${newRef})`, parent.request_id);
 
@@ -1112,7 +1316,7 @@ router.patch('/quotation-versions/:id/discount', (req, res) => {
   const computed = resolved.map(entry => {
     const li = entry.src;
     const d  = entry.d;
-    const unit_price = li.list_price ? +(li.list_price * (1 - d)).toFixed(2) : li.unit_price;
+    const unit_price = li.list_price ? INST.netOf(li.list_price, d) : li.unit_price;
     const qty = li.qty || 0;
     const subtotal = +(qty * unit_price).toFixed(2);
     total += subtotal;
@@ -1146,8 +1350,7 @@ router.patch('/quotation-versions/:id/discount', (req, res) => {
     return res.status(500).json({ error: e.message });
   }
 
-  notify(req.io, [parentReq.assigned_designer_id, parentReq.assigned_reviewer_id, ...usersWithRole('design_manager')]
-    .filter(uid => uid && uid !== req.user.id),
+  notify(req, [parentReq.assigned_designer_id, parentReq.assigned_reviewer_id],
     'discount_edited',
     `${req.user.name} updated the discount on "${opp.title}" (now JOD ${totalValue.toLocaleString()})`,
     parentReq.id);
@@ -1290,6 +1493,14 @@ router.get('/quotation-versions/:id/discount-analysis', (req, res) => {
     opp, basis, target_gp: targetGP,
     base: { list_total: listTotal, cost_total: costTotal, lines_missing_cost: missingCost, lines_missing_list: missingList, line_count: lines.length },
     tiers: tierRows, suggested_max_discount, lines,
+    // Installation & project costs (from the saved calc) so the PM sees the split
+    // behind the single INSTALL-VRF / COPPER-SPLIT lines.
+    installation: (() => {
+      const j = safeJsonParse(q.installation_json, null);
+      if (!j || !j.result) return null;
+      return { counts: j.result.counts, breakdown: j.result.breakdown, price: j.result.price, net: j.result.net,
+               cost: j.result.cost, cost_total: j.result.cost_total, enabled: !!(j.inputs && j.inputs.enabled), split_copper: j.split_copper || null };
+    })(),
   });
 });
 
@@ -1299,6 +1510,8 @@ router.get('/quotation-versions/:id/discount-analysis', (req, res) => {
 //   can see the deal may download it; cost/margin columns are never included.
 // ---------------------------------------------------------------------------
 const { renderQuotationDoc } = require('../utils/quotationDoc');
+// Customer-facing sections (same list as products.js QUOTE_SECTIONS / the IMG offer file).
+const QUOTE_SECTION_SET = new Set(['VRF System', 'Split System', 'Ducted', 'FCU', 'CCU', 'AHU', 'Chiller', 'Package', 'Heat Pump', 'Copper', 'Installation']);
 let _logoCache = null;
 function logoDataUri() {
   if (_logoCache !== null) return _logoCache;
@@ -1309,17 +1522,29 @@ function logoDataUri() {
   return _logoCache;
 }
 
-router.get('/quotation-versions/:id/export.doc', (req, res) => {
-  const q = db.prepare(`SELECT * FROM quotation_versions WHERE id = ?`).get(+req.params.id);
-  if (!q) return res.status(404).json({ error: 'Quotation not found.' });
-
-  // Line items — cost_snapshot deliberately NOT selected (never in the client doc).
+// Gather everything the client-facing quotation needs for one version (shared
+// by the Word download, the on-screen preview and the Excel workbook).
+// Returns { q, data, safeName } or null.
+function loadQuotationData(id) {
+  const q = db.prepare(`SELECT * FROM quotation_versions WHERE id = ?`).get(+id);
+  if (!q) return null;
   const line_items = db.prepare(`
-    SELECT line_num, category, model, description, qty, unit, unit_price, subtotal
+    SELECT line_num, category, model, description, qty, unit, list_price, unit_price, subtotal
     FROM quotation_line_items WHERE quotation_version_id = ? ORDER BY line_num
   `).all(q.id);
-
-  // Client name + attention from the linked request → opportunity → org/contact.
+  // Older quotes stored the granular pricelist category (e.g. "GMV X Pro") as the
+  // line category; resolve it to the customer-facing section via the item's
+  // quote_section so the document groups pages like the IMG offer file.
+  // sku_section = the item's pricelist family (e.g. "GMV X Pro", "Controller") — the
+  // offer-file export uses it to pick Outdoor / Indoor / Controllers.
+  const secByModel = db.prepare(`SELECT quote_section, section FROM product_skus WHERE model = ? ORDER BY (quote_section IS NULL), updated_at DESC LIMIT 1`);
+  line_items.forEach((li) => {
+    if (!li.model) return;
+    const hit = secByModel.get(li.model);
+    if (!hit) return;
+    li.sku_section = hit.section || null;
+    if (!QUOTE_SECTION_SET.has(li.category) && hit.quote_section) li.category = hit.quote_section;
+  });
   const reqRow = db.prepare(`SELECT opportunity_id FROM design_requests WHERE id = ?`).get(q.request_id);
   let org_name = '', contact_name = '', salesman_name = '';
   if (reqRow) {
@@ -1335,20 +1560,127 @@ router.get('/quotation-versions/:id/export.doc', (req, res) => {
     contact_name = opp.contact_name || '';
     salesman_name = opp.salesman_name || '';
   }
-
-  const html = renderQuotationDoc({
+  const data = {
     reference: q.reference, quote_date: q.quote_date, project_name: q.project_name,
     city: q.city, project_type: q.project_type, brand: q.brand,
+    pricing_mode: q.pricing_mode,          // drives the correct tax/customs sentence
+    version_number: q.version_number, discount_pct_global: q.discount_pct_global,
     sales_engineer_name: q.sales_engineer_name || salesman_name,
     design_engineer_name: q.design_engineer_name,
     intro_text: q.intro_text, maintenance_text: q.maintenance_text, tnc_text: q.tnc_text,
     org_name, contact_name, currency: 'JOD', line_items, logoDataUri: logoDataUri(),
-  });
-
+    installation: safeJsonParse(q.installation_json, null),
+    warranty_years: q.warranty_years, pm_years: q.pm_years, pm_visits_per_year: q.pm_visits_per_year,
+  };
   const safeName = String(q.reference || q.project_name || `quotation-${q.id}`).replace(/[^\w.\- ]+/g, '_').trim() || `quotation-${q.id}`;
+  return { q, data, safeName };
+}
+function buildQuotationHtml(id) {
+  const r = loadQuotationData(id);
+  if (!r) return null;
+  return { q: r.q, html: renderQuotationDoc(r.data), safeName: r.safeName };
+}
+
+router.get('/quotation-versions/:id/export.doc', (req, res) => {
+  const r = buildQuotationHtml(req.params.id);
+  if (!r) return res.status(404).json({ error: 'Quotation not found.' });
   res.setHeader('Content-Type', 'application/msword; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="${safeName}.doc"`);
-  res.send(html);
+  res.setHeader('Content-Disposition', `attachment; filename="${r.safeName}.doc"`);
+  res.send(r.html);
+});
+
+// GET /api/quotation-versions/:id/export.xlsx — the quotation as an Excel
+// workbook mirroring IMG's original "New AC Offer" file (one sheet per page:
+// General, CP cover, Introduction, Sum(Total), one sheet per section, Terms).
+// ── Quotation attachments (real files: the designer's own offer, drawings, PDFs).
+//   Stored under uploads/quotations/:id/; the list lives in quotation_versions.files.
+const qStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const dir = path.join(process.env.UPLOADS_PATH || './uploads', 'quotations', String(+req.params.id || 'tmp'));
+    fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => cb(null, `${Date.now()}-${Buffer.from(file.originalname, 'latin1').toString('utf8').replace(/[/\\:*?"<>|]/g, '_')}`),
+});
+const qUpload = multer({ storage: qStorage, limits: { fileSize: 50 * 1024 * 1024 } });
+function canEditQuotationFiles(req, q) {
+  if (['admin', 'design_manager', 'product_manager'].includes(req.user.role)) return true;
+  if (q.created_by === req.user.id) return true;
+  const r = db.prepare(`SELECT assigned_designer_id FROM design_requests WHERE id = ?`).get(q.request_id);
+  return !!(r && r.assigned_designer_id === req.user.id);
+}
+router.post('/quotation-versions/:id/attachments', qUpload.array('file', 10), (req, res) => {
+  const q = db.prepare(`SELECT * FROM quotation_versions WHERE id = ?`).get(+req.params.id);
+  if (!q) return res.status(404).json({ error: 'Quotation not found.' });
+  if (!canEditQuotationFiles(req, q)) return res.status(403).json({ error: 'Only the designer of this quotation (or a manager) can attach files.' });
+  const files = safeJsonParse(q.files, []) || [];
+  for (const f of req.files || []) {
+    files.push({ name: Buffer.from(f.originalname, 'latin1').toString('utf8'), stored: f.filename, size: f.size, uploaded_by: req.user.id, uploaded_at: new Date().toISOString() });
+  }
+  db.prepare(`UPDATE quotation_versions SET files = ? WHERE id = ?`).run(JSON.stringify(files), q.id);
+  res.json({ ok: true, files });
+});
+router.get('/quotation-versions/:id/attachments/:idx', (req, res) => {
+  const q = db.prepare(`SELECT files FROM quotation_versions WHERE id = ?`).get(+req.params.id);
+  const f = q && (safeJsonParse(q.files, []) || [])[+req.params.idx];
+  if (!f || !f.stored) return res.status(404).json({ error: 'File not found.' });
+  const p = path.join(process.env.UPLOADS_PATH || './uploads', 'quotations', String(+req.params.id), f.stored);
+  if (!fs.existsSync(p)) return res.status(404).json({ error: 'File is missing on the server.' });
+  res.download(p, f.name);
+});
+router.delete('/quotation-versions/:id/attachments/:idx', (req, res) => {
+  const q = db.prepare(`SELECT * FROM quotation_versions WHERE id = ?`).get(+req.params.id);
+  if (!q) return res.status(404).json({ error: 'Quotation not found.' });
+  if (!canEditQuotationFiles(req, q)) return res.status(403).json({ error: 'Not allowed.' });
+  const files = safeJsonParse(q.files, []) || [];
+  const [f] = files.splice(+req.params.idx, 1);
+  if (f && f.stored) { try { fs.unlinkSync(path.join(process.env.UPLOADS_PATH || './uploads', 'quotations', String(q.id), f.stored)); } catch {} }
+  db.prepare(`UPDATE quotation_versions SET files = ? WHERE id = ?`).run(JSON.stringify(files), q.id);
+  res.json({ ok: true, files });
+});
+
+// GET /api/quotation-versions/:id/export.xlsm — IMG's ORIGINAL offer workbook
+// (templates/ac-offer-template.xlsm) with this quotation filled into its input
+// cells. Same file, same look, same formulas — only the data is ours.
+const { fillOfferTemplate } = require('../utils/quotationXlsm');
+router.get('/quotation-versions/:id/export.xlsm', async (req, res) => {
+  const r = loadQuotationData(req.params.id);
+  if (!r) return res.status(404).json({ error: 'Quotation not found.' });
+  try {
+    const { buffer, warnings } = await fillOfferTemplate(r.data);
+    if (warnings.length) console.warn(`export.xlsm ${r.safeName}:`, warnings.join(' | '));
+    res.setHeader('Content-Type', 'application/vnd.ms-excel.sheet.macroEnabled.12');
+    res.setHeader('Content-Disposition', `attachment; filename="${r.safeName}.xlsm"`);
+    res.setHeader('X-Quotation-Warnings', encodeURIComponent(warnings.join(' | ')).slice(0, 1800));
+    res.send(buffer);
+  } catch (err) {
+    console.error('export.xlsm failed:', err);
+    res.status(500).json({ error: 'Could not fill the offer workbook.' });
+  }
+});
+
+const { renderQuotationXlsx } = require('../utils/quotationXlsx');
+router.get('/quotation-versions/:id/export.xlsx', async (req, res) => {
+  const r = loadQuotationData(req.params.id);
+  if (!r) return res.status(404).json({ error: 'Quotation not found.' });
+  try {
+    const buf = await renderQuotationXlsx(r.data);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${r.safeName}.xlsx"`);
+    res.send(buf);
+  } catch (err) {
+    console.error('export.xlsx failed:', err);
+    res.status(500).json({ error: 'Could not build the Excel quotation.' });
+  }
+});
+
+// GET /api/quotation-versions/:id/preview — same document, served INLINE as HTML
+// so designer/reviewer can open it in a big, clear browser tab (no download).
+router.get('/quotation-versions/:id/preview', (req, res) => {
+  const r = buildQuotationHtml(req.params.id);
+  if (!r) return res.status(404).send('<p>Quotation not found.</p>');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(r.html);
 });
 
 // ---------------------------------------------------------------------------
@@ -1681,14 +2013,8 @@ router.post('/design-requests/:id/comments', (req, res) => {
 
   // Fan out notifications to the other parties on this thread.
   const r = access.request;
-  const recipients = new Set();
-  if (req.user.id !== r.salesman_id) recipients.add(r.salesman_id);
-  if (r.assigned_designer_id && req.user.id !== r.assigned_designer_id) recipients.add(r.assigned_designer_id);
-  // Sally (design_manager) is always notified except when she's the author.
-  if (req.user.role !== 'design_manager') {
-    usersWithRole('design_manager').forEach(uid => recipients.add(uid));
-  }
-  notify(req.io, [...recipients].filter(Boolean), 'design_comment',
+  // Involved: the salesman + designer of this request (design managers come from the rules).
+  notify(req, [r.salesman_id, r.assigned_designer_id], 'design_comment',
     `${req.user.name} commented on "${r.opp_title}"`, requestId);
 
   const row = db.prepare(`

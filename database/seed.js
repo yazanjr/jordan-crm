@@ -59,7 +59,7 @@ const getPermId = key => db.prepare('SELECT id FROM permissions WHERE key = ?').
 const matrix = {
   admin: allPerms.map(p => p.key), // admin gets everything
   sales_manager: [
-    'opps.view_all', 'opps.edit_all', 'opps.assign_salesman', 'opps.change_stage', 'opps.close',
+    'opps.create', 'opps.view_all', 'opps.edit_all', 'opps.assign_salesman', 'opps.change_stage', 'opps.close',
     'disc.approve_override', 'disc.apply_standard',
     'note.create_own', 'note.assign_task', 'note.view_team',
     'reports.view_all',
@@ -206,6 +206,12 @@ const pricingParams = [
   ['CCU', 'CCU_T2', 'Discount tier 2', 0.30],
   ['CCU', 'CCU_T3', 'Discount tier 3', 0.35],
   ['CCU', 'CCU_T4', 'Discount tier 4 (deepest)', 0.40],
+  // Default target GP% per category — pre-fills the per-item "Suggest" and the
+  // group "Set price → target GP" action. Editable like any parameter.
+  ['U-Match Projects', 'UMP_TGP', 'Default target GP %', 0.50],
+  ['GMV', 'GMV_TGP', 'Default target GP %', 0.45],
+  ['FCU', 'FCU_TGP', 'Default target GP %', 0.45],
+  ['CCU', 'CCU_TGP', 'Default target GP %', 0.45],
 ];
 const insertPP = db.prepare(`INSERT OR IGNORE INTO pricing_params (category, code, label, value) VALUES (?, ?, ?, ?)`);
 pricingParams.forEach(p => insertPP.run(p[0], p[1], p[2], p[3]));

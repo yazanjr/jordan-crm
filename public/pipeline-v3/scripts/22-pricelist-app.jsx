@@ -33,7 +33,8 @@ function PricelistApp() {
   const [bulkOpen, setBulkOpen]   = useState(false);
   const [uploadMode, setUploadMode] = useState('merge'); // 'merge' | 'replace'
   const [busy, setBusy]           = useState(false);
-  const [paramsOpen, setParamsOpen] = useState(false);   // GREE parameters editor
+  const [paramsOpen, setParamsOpen] = useState(false);
+  const [instParamsOpen, setInstParamsOpen] = useState(false);   // GREE parameters editor
   const [buildupId, setBuildupId]   = useState(null);    // SKU id whose build-up modal is open
   const fireToast = (msg, opts={}) => setToast({ msg, ...opts });
 
@@ -166,6 +167,23 @@ function PricelistApp() {
     finally { setBusy(false); }
   };
 
+  // Group pricing: set Price 1 for the selected items to hit a target GP%.
+  const bulkPriceFromGP = async (ids) => {
+    if (!ids.length) return;
+    const v = window.prompt(`Set the selling price of the ${ids.length} selected item${ids.length === 1 ? '' : 's'} to hit a target gross profit.\n\nEnter the target GP % (e.g. 45):`, '45');
+    if (v == null) return;
+    const frac = Number(v) / 100;
+    if (!(frac >= 0 && frac < 1)) { fireToast('Enter a target GP between 0 and 100.', { danger: true }); return; }
+    setBusy(true);
+    try {
+      const r = await window.api.post('/product-skus/bulk-price-from-gp', { ids, target_gp: frac });
+      fireToast(`Priced ${r.updated} item${r.updated === 1 ? '' : 's'} at ${v}% GP${r.skipped_no_cost ? ` · ${r.skipped_no_cost} skipped (no cost)` : ''}`);
+      setSelected(new Set());
+      reload();
+    } catch (e) { fireToast(`Failed: ${e.message}`, { danger: true }); }
+    finally { setBusy(false); }
+  };
+
   const clearBook = async () => {
     if (!bookId) { fireToast('Pick a price book first.', { danger: true }); return; }
     if (!window.confirm(`Back up to Excel, then retire ALL SKUs in the WHOLE book "${bookName()}"? Existing quotations keep their snapshots.`)) return;
@@ -260,6 +278,8 @@ function PricelistApp() {
               <span style={{ fontSize: 12, color: 'var(--fg-secondary)' }}>{skus.length} SKUs</span>
               <button onClick={() => setParamsOpen(true)} title="Edit the pricing parameters (rates, tiers, exchange rate)"
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 7, cursor: 'pointer', background: 'var(--bg-surface)', color: 'var(--fg-primary)', border: '1px solid var(--border-default)', fontSize: 13, fontWeight: 600 }}>⚙ Parameters</button>
+              <button onClick={() => setInstParamsOpen(true)} title="Installation rates — labour, copper, options, location, supervision (separate from item pricing)"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 7, cursor: 'pointer', background: 'var(--bg-surface)', color: 'var(--fg-primary)', border: '1px solid var(--border-default)', fontSize: 13, fontWeight: 600 }}>🔧 Installation parameters</button>
               <button onClick={() => bookId ? setSkuModal({ mode: 'add', row: null }) : fireToast('Pick a price book first.', { danger: true })}
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 7, cursor: 'pointer', background: 'var(--bg-surface)', color: 'var(--img-orange-700, #B8680E)', border: '1px solid var(--img-orange)', fontSize: 13, fontWeight: 600 }}>+ Add SKU</button>
               <button onClick={() => doExport(null)} title="Download the entire price book as Excel"
@@ -295,6 +315,7 @@ function PricelistApp() {
                 <span style={{ fontSize: 11, color: 'var(--fg-tertiary)', marginRight: 2 }}>These act on the {selected.size} selected only:</span>
                 <button onClick={() => doExport(selectedIds())} style={selBtn}>⬇ Export selected</button>
                 <button onClick={() => setBulkOpen(true)} style={selBtn}>✎ Bulk edit selected</button>
+                {canSeeCosts && <button onClick={() => bulkPriceFromGP(selectedIds())} disabled={busy} style={{ ...selBtn, color: 'var(--img-orange-700)', borderColor: 'var(--img-orange)' }} title="Set Price 1 for these items to hit a target GP%">◎ Set price → target GP%</button>}
                 <button onClick={() => bulkDeactivate(selectedIds(), { alsoExport: true })} disabled={busy} style={{ ...selBtn, color: 'var(--color-danger)', borderColor: 'var(--color-danger)' }}>Export &amp; remove selected</button>
                 <button onClick={() => bulkDeactivate(selectedIds())} disabled={busy} style={{ ...selBtn, color: 'var(--color-danger)', borderColor: 'var(--color-danger)' }}>Remove selected</button>
                 <button onClick={() => setSelected(new Set())} style={{ ...selBtn, border: 'none', background: 'transparent' }}>Clear</button>
@@ -450,6 +471,7 @@ function PricelistApp() {
         />
       )}
 
+      {instParamsOpen && <InstallationParamsModal onClose={() => setInstParamsOpen(false)} fireToast={fireToast} />}
       {paramsOpen && <ParametersModal onClose={() => setParamsOpen(false)} onSaved={(n) => { fireToast(`Saved — recomputed ${n} items`); reload(); }} fireToast={fireToast} />}
       {buildupId != null && <BuildUpModal skuId={buildupId} onClose={() => setBuildupId(null)} onChanged={() => reload()} fireToast={fireToast} />}
 
@@ -667,41 +689,181 @@ function DeactivateModal({ sku, loading, usage, onClose, onConfirm }) {
 }
 
 // ── GREE pricing parameters editor ──────────────────────────────────────────
+const CORE_SUFFIXES = ['SHIP', 'CUST', 'EXTRA', 'TAX'];
+const suffixOfCode = (code) => String(code).split('_').pop();
+const isCoreRow = (r) => r.category === 'GLOBAL' || CORE_SUFFIXES.includes(suffixOfCode(r.code));
+
+// Installation parameters — their OWN list (not the item pricing parameters).
+// Values mirror the IMG offer file's "Installation Price" + "PM Costing" sheets.
+function InstallationParamsModal({ onClose, fireToast }) {
+  const { ModalShell, Btn } = window.PopupShell;
+  const [rows, setRows] = useState(null);
+  const [edited, setEdited] = useState({});   // code → { value?, value2?, extra? }
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { window.api.get('/installation-params').then(setRows).catch(() => setRows([])); }, []);
+  const setF = (code, field, v) => setEdited(e => ({ ...e, [code]: { ...(e[code] || {}), [field]: v } }));
+  const cur = (r, field) => (edited[r.code] && edited[r.code][field] !== undefined ? edited[r.code][field] : (r[field] ?? ''));
+  const dirty = Object.keys(edited).filter(code => {
+    const r = (rows || []).find(x => x.code === code); if (!r) return false;
+    return Object.entries(edited[code]).some(([f, v]) => String(v) !== String(r[f] ?? ''));
+  });
+  const save = async () => {
+    if (!dirty.length) { onClose(); return; }
+    setSaving(true);
+    try {
+      await window.api.put('/installation-params', { params: dirty.map(code => { const r = rows.find(x => x.code === code); return { code, value: cur(r, 'value'), value2: cur(r, 'value2'), extra: cur(r, 'extra') }; }) });
+      fireToast('Installation parameters saved — new quotations use the new rates'); onClose();
+    } catch (e) { fireToast('Failed: ' + e.message, { danger: true }); } finally { setSaving(false); }
+  };
+  const GROUPS = [
+    ['labour', 'Installation labour (selling)'], ['copper', 'Copper pipes'], ['option', 'Options'], ['fixed', 'Shop drawings'],
+    ['location', 'Location extra'], ['supervision', 'Supervision / preventive maintenance — by number of indoor units'], ['split_copper', 'Copper for split system'],
+    ['cost', 'Cost side (used by Costing)'], ['warranty', 'Warranty cost — % of VRF equipment value, by years (Costing only)'], ['pm_visits', 'Preventive-maintenance visits cost (Costing only)'],
+  ];
+  const numInp = { height: 30, padding: '0 8px', border: '1px solid var(--border-default)', borderRadius: 6, fontSize: 12.5, background: 'var(--bg-surface)', textAlign: 'right', width: '100%' };
+  return (
+    <ModalShell title="Installation parameters" subtitle="Rates used to price VRF installation in quotations — same values as the offer file. Separate from the item pricing parameters." width={640} onClose={onClose}
+      footer={<><Btn kind="ghost" onClick={onClose}>Close</Btn><Btn kind="primary" disabled={saving || !dirty.length} onClick={save}>{saving ? 'Saving…' : `Save${dirty.length ? ` (${dirty.length})` : ''}`}</Btn></>}>
+      <div style={{ padding: 20, maxHeight: '64vh', overflowY: 'auto' }}>
+        {rows == null ? <div style={{ color: 'var(--fg-tertiary)' }}>Loading…</div> : GROUPS.map(([g, title]) => {
+          const list = rows.filter(r => r.grp === g); if (!list.length) return null;
+          const isSup = g === 'supervision';
+          return (
+            <div key={g} style={{ marginBottom: 18 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: 'var(--img-orange-700)', marginBottom: 8 }}>{title}</div>
+              <div style={{ display: 'grid', gridTemplateColumns: isSup ? '1fr 110px 110px' : '1fr 130px 70px', gap: '6px 10px', alignItems: 'center' }}>
+                {isSup && <><span /><span style={{ fontSize: 10.5, color: 'var(--fg-tertiary)', textAlign: 'right' }}>LIST PRICE</span><span style={{ fontSize: 10.5, color: 'var(--fg-tertiary)', textAlign: 'right' }}>COST</span></>}
+                {list.map(r => (
+                  <React.Fragment key={r.code}>
+                    <label style={{ fontSize: 12.5, color: 'var(--fg-secondary)' }}>{r.label}</label>
+                    {r.code === 'LOC_HALF_CITIES'
+                      ? <input value={cur(r, 'extra')} onChange={e => setF(r.code, 'extra', e.target.value)} style={{ ...numInp, textAlign: 'left' }} />
+                      : <input type="number" step="any" min="0" value={cur(r, 'value')} onChange={e => setF(r.code, 'value', e.target.value)} style={numInp} />}
+                    {isSup
+                      ? <input type="number" step="any" min="0" value={cur(r, 'value2')} onChange={e => setF(r.code, 'value2', e.target.value)} style={numInp} />
+                      : <span style={{ fontSize: 10.5, color: 'var(--fg-tertiary)' }}>{r.unit || ''}</span>}
+                  </React.Fragment>))}
+              </div>
+            </div>);
+        })}
+      </div>
+    </ModalShell>
+  );
+}
+
 function ParametersModal({ onClose, onSaved, fireToast }) {
   const { ModalShell, Btn } = window.PopupShell;
   const [rows, setRows] = useState(null);
   const [edited, setEdited] = useState({});
   const [saving, setSaving] = useState(false);
-  useEffect(() => { window.api.get('/pricing-params').then(setRows).catch(() => setRows([])); }, []);
+  const [busy, setBusy] = useState(false);
+  const [addingCat, setAddingCat] = useState(false);
+  const blankCat = { category: '', code_prefix: '', ship: '', cust: '', extra: '', tax: '', copper: '', install: '', tgp: '', tiers: '0.25, 0.30, 0.35, 0.40' };
+  const [newCat, setNewCat] = useState(blankCat);
+  const reload = () => window.api.get('/pricing-params').then(r => { setRows(r); setEdited({}); }).catch(() => setRows([]));
+  useEffect(() => { reload(); }, []);
   const setVal = (code, v) => setEdited(e => ({ ...e, [code]: v }));
   const groups = useMemo(() => { const g = {}; (rows || []).forEach(r => (g[r.category] = g[r.category] || []).push(r)); return g; }, [rows]);
   const dirty = Object.keys(edited).filter(code => { const r = (rows || []).find(x => x.code === code); return r && String(edited[code]) !== String(r.value); });
+
   const save = async () => {
     if (!dirty.length) { onClose(); return; }
     setSaving(true);
     try { const r = await window.api.put('/pricing-params', { updates: dirty.map(code => ({ code, value: Number(edited[code]) || 0 })) }); onSaved(r.recomputed); onClose(); }
     catch (e) { fireToast('Failed: ' + e.message, { danger: true }); } finally { setSaving(false); }
   };
+  const delRow = async (r) => {
+    if (!window.confirm(`Delete parameter "${r.label || r.code}" (${r.code})?`)) return;
+    setBusy(true);
+    try { const x = await window.api.del(`/pricing-params/${r.code}`); await reload(); onSaved && onSaved(x.recomputed); fireToast('Deleted'); }
+    catch (e) { fireToast('Failed: ' + e.message, { danger: true }); } finally { setBusy(false); }
+  };
+  const addTier = async (cat) => {
+    const v = window.prompt(`New discount tier for "${cat}" — enter the discount % (e.g. 45):`, '45');
+    if (v == null) return;
+    const frac = Number(v) / 100;
+    if (!(frac >= 0 && frac < 1)) { fireToast('Enter a discount between 0 and 100.', { danger: true }); return; }
+    const existing = (groups[cat] || []).filter(r => /^T\d+$/.test(suffixOfCode(r.code))).length;
+    setBusy(true);
+    try { const x = await window.api.post('/pricing-params', { category: cat, suffix: `T${existing + 1}`, value: frac }); await reload(); onSaved && onSaved(x.recomputed); fireToast('Tier added'); }
+    catch (e) { fireToast('Failed: ' + e.message, { danger: true }); } finally { setBusy(false); }
+  };
+  const delCategory = async (cat) => {
+    if (!window.confirm(`Delete the whole "${cat}" category and all its parameters?`)) return;
+    setBusy(true);
+    try {
+      await window.api.del(`/pricing-categories/${encodeURIComponent(cat)}`);
+      await reload(); fireToast('Category deleted');
+    } catch (e) {
+      if (e.status === 409 && window.confirm(`${e.message}\n\nForce delete anyway? Items keep their category name but lose pricing.`)) {
+        try { await window.api.del(`/pricing-categories/${encodeURIComponent(cat)}?force=1`); await reload(); fireToast('Category force-deleted'); }
+        catch (e2) { fireToast('Failed: ' + e2.message, { danger: true }); }
+      } else if (e.status !== 409) fireToast('Failed: ' + e.message, { danger: true });
+    } finally { setBusy(false); }
+  };
+  const saveNewCat = async () => {
+    if (!newCat.category.trim() || !newCat.code_prefix.trim()) { fireToast('Name and code prefix are required.', { danger: true }); return; }
+    const body = { ...newCat, tiers: String(newCat.tiers).split(',').map(s => Number(s.trim())).filter(n => Number.isFinite(n) && n > 0 && n < 1) };
+    setBusy(true);
+    try { await window.api.post('/pricing-categories', body); setAddingCat(false); setNewCat(blankCat); await reload(); fireToast('Category added'); }
+    catch (e) { fireToast('Failed: ' + e.message, { danger: true }); } finally { setBusy(false); }
+  };
+
+  const inp = { height: 30, padding: '0 8px', border: '1px solid var(--border-default)', borderRadius: 6, fontSize: 12.5, background: 'var(--bg-surface)' };
+  const numInp = { ...inp, textAlign: 'right' };
   return (
-    <ModalShell title="Pricing parameters" subtitle="Global + per-category inputs. Saving recomputes every GREE item." width={560} onClose={onClose}
-      footer={<><Btn kind="ghost" onClick={onClose}>Cancel</Btn><Btn kind="primary" disabled={saving || !dirty.length} onClick={save}>{saving ? 'Saving…' : `Save${dirty.length ? ` (${dirty.length})` : ''}`}</Btn></>}>
+    <ModalShell title="Pricing parameters" subtitle="Edit values, add/remove tiers, or add a whole category. Changes recompute every GREE item." width={580} onClose={onClose}
+      footer={<><Btn kind="ghost" onClick={onClose}>Close</Btn><Btn kind="primary" disabled={saving || busy || !dirty.length} onClick={save}>{saving ? 'Saving…' : `Save values${dirty.length ? ` (${dirty.length})` : ''}`}</Btn></>}>
       <div style={{ padding: 20, maxHeight: '62vh', overflowY: 'auto' }}>
         {rows == null ? <div style={{ color: 'var(--fg-tertiary)' }}>Loading…</div> :
           Object.keys(groups).map(cat => (
             <div key={cat} style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: 'var(--img-orange-700)', marginBottom: 8 }}>{cat}</div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: '6px 12px', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: 'var(--img-orange-700)' }}>{cat}</span>
+                {cat !== 'GLOBAL' && <>
+                  <button disabled={busy} onClick={() => addTier(cat)} title="Add a discount tier"
+                    style={{ fontSize: 11, fontWeight: 600, border: '1px dashed var(--img-orange)', background: 'transparent', color: 'var(--img-orange-700)', borderRadius: 5, padding: '1px 7px', cursor: 'pointer' }}>+ tier</button>
+                  <span style={{ flex: 1 }} />
+                  <button disabled={busy} onClick={() => delCategory(cat)} title="Delete this whole category"
+                    style={{ fontSize: 11, border: 'none', background: 'transparent', color: 'var(--color-danger)', cursor: 'pointer' }}>Delete category</button>
+                </>}
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px 24px', gap: '6px 10px', alignItems: 'center' }}>
                 {groups[cat].map(r => {
                   const val = edited[r.code] !== undefined ? edited[r.code] : r.value;
                   return <React.Fragment key={r.code}>
                     <label style={{ fontSize: 12.5, color: 'var(--fg-secondary)' }}>{r.label || r.code} <span className="t-mono" style={{ fontSize: 10, color: 'var(--fg-tertiary)' }}>({r.code})</span></label>
-                    <input type="number" step="any" value={val} onChange={e => setVal(r.code, e.target.value)}
-                      style={{ height: 30, padding: '0 8px', border: '1px solid var(--border-default)', borderRadius: 6, fontSize: 12.5, textAlign: 'right', background: 'var(--bg-surface)' }} />
+                    <input type="number" step="any" value={val} onChange={e => setVal(r.code, e.target.value)} style={numInp} />
+                    {isCoreRow(r) ? <span /> : (
+                      <button disabled={busy} onClick={() => delRow(r)} title="Delete this parameter"
+                        style={{ border: 'none', background: 'transparent', color: 'var(--fg-tertiary)', cursor: 'pointer', fontSize: 15, lineHeight: 1 }}>×</button>
+                    )}
                   </React.Fragment>;
                 })}
               </div>
             </div>
           ))}
+
+        {/* Add category */}
+        {rows != null && (addingCat ? (
+          <div style={{ border: '1px solid var(--img-orange)', borderRadius: 8, padding: 12, background: 'var(--img-orange-50, #FFF7EE)' }}>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>New cost category</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <label style={{ fontSize: 11, color: 'var(--fg-secondary)' }}>Name<input value={newCat.category} onChange={e => setNewCat({ ...newCat, category: e.target.value })} placeholder="e.g. Residential Split" style={{ ...inp, width: '100%' }} /></label>
+              <label style={{ fontSize: 11, color: 'var(--fg-secondary)' }}>Code prefix<input value={newCat.code_prefix} onChange={e => setNewCat({ ...newCat, code_prefix: e.target.value.toUpperCase() })} placeholder="e.g. RSPLIT" style={{ ...inp, width: '100%' }} /></label>
+              {[['ship', 'Shipping % (e.g. 0.12)'], ['cust', 'Customs % (e.g. 0.16)'], ['extra', 'Extra % (e.g. 0.05)'], ['tax', 'Sales tax % (e.g. 0.16)'], ['copper', 'Copper JOD/set (optional)'], ['install', 'Install JOD/set (optional)'], ['tgp', 'Target GP frac (e.g. 0.45)']].map(([k, ph]) => (
+                <label key={k} style={{ fontSize: 11, color: 'var(--fg-secondary)' }}>{ph}<input type="number" step="any" value={newCat[k]} onChange={e => setNewCat({ ...newCat, [k]: e.target.value })} style={{ ...numInp, width: '100%' }} /></label>
+              ))}
+              <label style={{ fontSize: 11, color: 'var(--fg-secondary)', gridColumn: '1 / -1' }}>Discount tiers (comma-sep fractions)<input value={newCat.tiers} onChange={e => setNewCat({ ...newCat, tiers: e.target.value })} style={{ ...inp, width: '100%' }} /></label>
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+              <Btn kind="primary" disabled={busy} onClick={saveNewCat}>{busy ? 'Adding…' : 'Add category'}</Btn>
+              <Btn kind="ghost" onClick={() => { setAddingCat(false); setNewCat(blankCat); }}>Cancel</Btn>
+            </div>
+          </div>
+        ) : (
+          <button onClick={() => setAddingCat(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 7, border: '1px dashed var(--img-orange)', background: 'transparent', color: 'var(--img-orange-700)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>+ Add category</button>
+        ))}
       </div>
     </ModalShell>
   );
@@ -726,7 +888,12 @@ function BuildUpModal({ skuId, onClose, onChanged, fireToast }) {
   const [targetGP, setTargetGP] = useState('');
   const [saving, setSaving] = useState(false);
   const money = n => n == null ? '—' : Number(n).toLocaleString();
-  const load = () => window.api.get(`/product-skus/${skuId}/buildup`).then(x => { setD(x); setP1(x.prices.price1 != null ? x.prices.price1 : ''); }).catch(e => fireToast('Failed: ' + e.message, { danger: true }));
+  const load = () => window.api.get(`/product-skus/${skuId}/buildup`).then(x => {
+    setD(x);
+    setP1(x.prices.price1 != null ? x.prices.price1 : '');
+    // Pre-fill the target-GP suggester with the category's default GP%, only if untouched.
+    setTargetGP(prev => prev !== '' ? prev : (x.target_gp != null ? +(x.target_gp * 100).toFixed(1) : ''));
+  }).catch(e => fireToast('Failed: ' + e.message, { danger: true }));
   useEffect(() => { load(); }, [skuId]);
   const savePrice = async () => {
     setSaving(true);

@@ -173,6 +173,22 @@ function DealDetail({ deal, onClose, onAdvance, onMore, onUpdate, onAction,
           </div>
 
           {/* Action buttons */}
+          {(() => {
+            // Primary action names the actual next step. Prospect deals start the
+            // design flow; the design stage is designer-controlled; the last stage
+            // closes the deal; everything else advances by one, naming the target.
+            const order = window.STAGE_ORDER || [];
+            const meta = window.STAGE_META || {};
+            const i = order.indexOf(deal.stage);
+            const nextKey = i >= 0 && i < order.length - 1 ? order[i + 1] : null;
+            const nextLabel = nextKey ? (meta[nextKey]?.label || nextKey) : null;
+            let primaryLabel = 'Move to next stage';
+            if (deal.stage === 'prospect') primaryLabel = '✨ Request design';
+            else if (nextKey) primaryLabel = `Move to ${nextLabel}`;
+            else primaryLabel = 'Close deal';
+            const onPrimary = () => (deal.stage === 'prospect' ? onRequestDesign?.() : onAdvance?.(deal));
+            const primaryBtn = { flex: 1, padding: '7px 10px', height: 32, borderRadius: 7, background: 'var(--img-orange)', color: '#fff', border: 'none', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 };
+            return (
           <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
             {deal.stage === 'lead' ? (
               <button disabled title="Design controls this stage — Sally releases the deal when the design is approved" style={{
@@ -182,12 +198,8 @@ function DealDetail({ deal, onClose, onAdvance, onMore, onUpdate, onAction,
                 display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
               }}>🔒 Design controls this stage</button>
             ) : (
-              <button onClick={() => onAdvance?.(deal)} style={{
-                flex: 1, padding: '7px 10px', height: 32, borderRadius: 7,
-                background: 'var(--img-orange)', color: '#fff', border: 'none',
-                fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-              }}><Check size={14} /> Move to next stage</button>
+              <button onClick={onPrimary} style={primaryBtn}>
+                {deal.stage === 'prospect' ? null : <Check size={14} />} {primaryLabel}</button>
             )}
             <button onClick={() => act('quote')} style={{
               padding: '7px 10px', height: 32, borderRadius: 7,
@@ -206,6 +218,8 @@ function DealDetail({ deal, onClose, onAdvance, onMore, onUpdate, onAction,
               display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
             }}><More size={14} /></button>
           </div>
+            );
+          })()}
 
           {/* Close / discount — only meaningful while the deal is still Active */}
           {deal.status === 'Active' && (
@@ -227,6 +241,19 @@ function DealDetail({ deal, onClose, onAdvance, onMore, onUpdate, onAction,
               }}>Discount</button>
             </div>
           )}
+
+          {/* Delete — always available (also in the “…” menu). */}
+          <div style={{ marginTop: 6 }}>
+            <button onClick={() => act('delete')} title="Delete this deal (10-second undo)" style={{
+              width: '100%', padding: '6px 10px', height: 30, borderRadius: 7,
+              background: 'transparent', color: '#B0241D',
+              border: '1px solid #E4B4B0', fontSize: 11.5, fontWeight: 600, cursor: 'pointer',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = '#FDECEC'}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+            >🗑 Delete deal</button>
+          </div>
         </div>
 
         {/* Scrollable body */}
@@ -357,6 +384,26 @@ function DealDetail({ deal, onClose, onAdvance, onMore, onUpdate, onAction,
                       }}>
                       <File size={13} /> Download quotation (Word)
                     </button>
+                  )}
+                  {releasedQuote?.id && (
+                    <button
+                      onClick={() => window.downloadBlob(`/api/quotation-versions/${releasedQuote.id}/export.xlsm`, `${releasedQuote.reference || 'quotation'}.xlsm`).catch(err => window.alert(err.message || 'Download failed'))}
+                      title="Your original IMG offer workbook, filled with this quotation"
+                      style={{
+                        marginTop: 8, marginLeft: 8, display: 'inline-flex', alignItems: 'center', gap: 6,
+                        padding: '6px 12px', borderRadius: 7, cursor: 'pointer',
+                        background: 'var(--img-green-700)', color: '#fff',
+                        border: '1px solid var(--img-green-700)', fontSize: 12, fontWeight: 600,
+                      }}>
+                      <File size={13} /> Download quotation (Excel)
+                    </button>
+                  )}
+                  {(releasedQuote?.files || []).some(x => x && x.stored) && (
+                    <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 11.5 }}>
+                      {releasedQuote.files.map((x, i) => x && x.stored ? (
+                        <a key={i} href={`/api/quotation-versions/${releasedQuote.id}/attachments/${i}?as=${window.api.userId()}`} target="_blank" rel="noopener"
+                          style={{ padding: '3px 9px', borderRadius: 999, background: 'var(--bg-surface)', border: '1px solid var(--border-default)', color: 'var(--fg-primary)', textDecoration: 'none' }}>📎 {x.name}</a>) : null)}
+                    </div>
                   )}
                   {releasedRequest.released_to_stage && (
                     <div style={{
@@ -919,9 +966,11 @@ const iconBtn = {
 // Collapsible "Design request details" — renders the full saved form via
 // window.DesignRequestSummary (defined in scripts/20-design-request-form.jsx).
 function DesignFormDetails({ request }) {
-  const [open, setOpen] = React.useState(false);
+  const [open, setOpen] = React.useState(true);   // open by default — it was too easy to miss
+  const [full, setFull] = React.useState(false);  // "View full form" shows every field incl. blanks
   const formType = request.form_data?.form_type;
   const Summary = window.DesignRequestSummary;
+  const FullForm = window.DesignRequestFullForm;
   return (
     <div style={{ marginTop: 10, border: '1px solid var(--border-subtle)', borderRadius: 8, overflow: 'hidden', background: 'var(--bg-surface)' }}>
       <button
@@ -953,9 +1002,15 @@ function DesignFormDetails({ request }) {
       </button>
       {open && (
         <div style={{ padding: 12, borderTop: '1px solid var(--border-subtle)', background: 'var(--neutral-25)' }}>
-          {Summary
-            ? <Summary form={request.form_data} />
-            : <div style={{ fontSize: 12, color: 'var(--fg-tertiary)' }}>Form summary component not loaded.</div>}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+            <button onClick={() => setFull(f => !f)} style={{
+              fontSize: 11, fontWeight: 600, cursor: 'pointer', padding: '3px 10px', borderRadius: 6,
+              border: '1px solid var(--img-orange)', background: full ? 'var(--img-orange-50, #FFF7EE)' : 'transparent', color: 'var(--img-orange-700, #B8680E)',
+            }}>{full ? '▾ Show summary' : '▸ View full form (all fields)'}</button>
+          </div>
+          {full
+            ? (FullForm ? <FullForm form={request.form_data} /> : <div style={{ fontSize: 12, color: 'var(--fg-tertiary)' }}>Full-form component not loaded.</div>)
+            : (Summary ? <Summary form={request.form_data} /> : <div style={{ fontSize: 12, color: 'var(--fg-tertiary)' }}>Form summary component not loaded.</div>)}
         </div>
       )}
     </div>

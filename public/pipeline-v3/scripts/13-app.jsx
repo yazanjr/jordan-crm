@@ -259,14 +259,14 @@ function PipelineApp() {
   // Helper: look up the status badge data for a deal using oppDbMap → designStatusMap.
   const designStatusFor = useCallback((deal) => {
     if (!deal) return null;
-    const dbId = oppDbMap[deal.name];
+    const dbId = deal.dbId || oppDbMap[deal.name];   // prefer the real id; name lookup misses on renamed/new deals
     return dbId ? (designStatusMap[dbId] || null) : null;
   }, [oppDbMap, designStatusMap]);
 
   // Fetch design requests for the selected deal whenever it changes.
   useEffect(() => {
     if (!selectedDeal) return;
-    const dbId = oppDbMap[selectedDeal.name];
+    const dbId = selectedDeal.dbId || oppDbMap[selectedDeal.name];
     if (!dbId) return;
     window.api.get(`/design-board/by-opportunity/${dbId}`)
       .then(reqs => setDesignByOpp(m => ({ ...m, [dbId]: reqs })))
@@ -289,7 +289,7 @@ function PipelineApp() {
   }, [selectedDeal]);
 
   const reloadDesignForDeal = useCallback((deal) => {
-    const dbId = oppDbMap[deal.name];
+    const dbId = deal.dbId || oppDbMap[deal.name];
     if (!dbId) return;
     window.api.get(`/design-board/by-opportunity/${dbId}`)
       .then(reqs => setDesignByOpp(m => ({ ...m, [dbId]: reqs })))
@@ -298,7 +298,7 @@ function PipelineApp() {
 
   const designForDeal = (deal) => {
     if (!deal) return [];
-    const dbId = oppDbMap[deal.name];
+    const dbId = deal.dbId || oppDbMap[deal.name];
     return dbId ? (designByOpp[dbId] || []) : [];
   };
 
@@ -578,7 +578,10 @@ function PipelineApp() {
         <More size={16} />
       </button>
 
-      {/* New deal — primary action, moved up into the title bar */}
+      {/* New deal — primary action, moved up into the title bar. Only roles that
+          can create opportunities (salesman/sales_manager/admin) see it, so it's
+          never a dead click that 403s for designers/PMs. */}
+      {window.canCreateDeal?.() && (
       <button onClick={() => openModal('newdeal')} style={{
         display: 'inline-flex', alignItems: 'center', height: 32,
         background: 'var(--img-orange)', color: '#fff', border: 'none',
@@ -592,6 +595,7 @@ function PipelineApp() {
           <ChevDown size={14} />
         </span>
       </button>
+      )}
     </div>
   );
 
@@ -706,6 +710,9 @@ function PipelineApp() {
             else if (a === 'closeWon')      openModal('closeDeal', { deal: selectedDeal, outcome: 'Won' });
             else if (a === 'closeLost')     openModal('closeDeal', { deal: selectedDeal, outcome: 'Lost' });
             else if (a === 'applyDiscount') openModal('applyDiscount', { deal: selectedDeal });
+            else if (a === 'delete') {
+              if (window.confirm(`Delete "${selectedDeal.name}"? You'll get a 10-second undo.`)) handleCardAction('delete', selectedDeal);
+            }
             else if (a === 'openContact' && payload?.id) {
               window.location.href = `Contacts.html?contact=${payload.id}`;
             }

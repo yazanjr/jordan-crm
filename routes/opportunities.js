@@ -74,14 +74,10 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
 
-function notify(io, userIds, type, message, oppId) {
-  if (!io) return;
-  const insert = db.prepare(`INSERT INTO notifications (user_id, type, message, opp_id) VALUES (?, ?, ?, ?)`);
-  userIds.forEach(uid => {
-    if (!uid) return;
-    insert.run(uid, type, message, oppId || null);
-    io.to(`user:${uid}`).emit('notification', { type, message });
-  });
+// Recipients are decided by utils/notifications.js (Settings → Notifications).
+const NOTIF = require('../utils/notifications');
+function notify(req, userIds, type, message, oppId) {
+  return NOTIF.send(req.io, req.user && req.user.id, userIds, type, message, { oppId });
 }
 
 function enrichOpp(opp) {
@@ -531,8 +527,7 @@ router.post('/', requirePerm('opps.create'), (req, res) => {
     .run(oppId, req.user.id);
 
   // Notify sales manager
-  const mgrs = db.prepare(`SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id WHERE r.name = 'sales_manager'`).all();
-  notify(req.io, mgrs.map(m => m.id), 'new_opportunity', `New opportunity: "${title}"`, oppId);
+  notify(req, [], 'new_opportunity', `New opportunity: "${title}"`, oppId);
 
   res.json({ id: oppId, success: true });
 });
@@ -618,7 +613,7 @@ router.post('/:id/stage', requirePerm('opps.change_stage'), (req, res) => {
   db.prepare(`INSERT INTO stage_history (opp_id, from_stage, to_stage, changed_by, reason, reason_note) VALUES (?,?,?,?,?,?)`)
     .run(opp.id, opp.stage, to_stage, req.user.id, reason || null, reason_note || null);
 
-  notify(req.io, [opp.salesman_id], 'stage_change', `Opportunity "${opp.title}" moved to ${to_stage}`, opp.id);
+  notify(req, [opp.salesman_id], 'stage_change', `Opportunity "${opp.title}" moved to ${to_stage}`, opp.id);
   res.json({ success: true, stage: to_stage });
 });
 
@@ -628,7 +623,7 @@ router.post('/:id/assign-salesman', requirePerm('opps.assign_salesman'), (req, r
   const opp = db.prepare('SELECT * FROM opportunities WHERE id = ?').get(req.params.id);
   if (!opp) return res.status(404).json({ error: 'Not found.' });
   db.prepare(`UPDATE opportunities SET salesman_id=?, updated_at=datetime('now') WHERE id=?`).run(salesman_id, opp.id);
-  notify(req.io, [salesman_id], 'assignment', `You have been assigned to "${opp.title}"`, opp.id);
+  notify(req, [salesman_id], 'assignment', `You have been assigned to "${opp.title}"`, opp.id);
   res.json({ success: true });
 });
 
@@ -638,7 +633,7 @@ router.post('/:id/assign-designer', requirePerm('opps.assign_designer'), (req, r
   const opp = db.prepare('SELECT * FROM opportunities WHERE id = ?').get(req.params.id);
   if (!opp) return res.status(404).json({ error: 'Not found.' });
   db.prepare(`UPDATE opportunities SET designer_id=?, updated_at=datetime('now') WHERE id=?`).run(designer_id, opp.id);
-  notify(req.io, [designer_id], 'assignment', `You have been assigned to design for "${opp.title}"`, opp.id);
+  notify(req, [designer_id], 'assignment', `You have been assigned to design for "${opp.title}"`, opp.id);
   res.json({ success: true });
 });
 
@@ -684,8 +679,7 @@ router.post('/:id/close', requirePerm('opps.close'), (req, res) => {
   db.prepare(`INSERT INTO stage_history (opp_id, from_stage, to_stage, changed_by, reason, reason_note) VALUES (?,?,?,?,?,?)`)
     .run(opp.id, opp.stage, outcome, req.user.id, closeReason || null, outcome === 'Won' ? (won_note || null) : (lost_notes || null));
 
-  const mgrs = db.prepare(`SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id WHERE r.name IN ('sales_manager','admin')`).all();
-  notify(req.io, [...mgrs.map(m => m.id), opp.salesman_id, opp.designer_id],
+  notify(req, [opp.salesman_id, opp.designer_id],
     'opportunity_closed', `Opportunity "${opp.title}" closed as ${outcome}`, opp.id);
 
   res.json({ success: true, status: outcome });

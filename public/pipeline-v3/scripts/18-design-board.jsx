@@ -55,9 +55,10 @@ function DesignBoardApp() {
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(r =>
-        r.oppTitle.toLowerCase().includes(q) ||
+        String(r.oppTitle || '').toLowerCase().includes(q) ||
         (r.account || '').toLowerCase().includes(q) ||
-        r.id.toLowerCase().includes(q) ||
+        String(r.id ?? '').toLowerCase().includes(q) ||
+        String(r.oppId ?? r.opportunity_id ?? '').includes(q) ||
         (r.requestedBy || '').toLowerCase().includes(q) ||
         (r.assignment?.designer || '').toLowerCase().includes(q)
       );
@@ -629,6 +630,7 @@ function PriorityChip({ priority }) {
 // ============================================================
 function RequestDetail({ request, onClose, onApprove, onRelease, onRevise, onAssign, onMoveStage, onReturn }) {
   const { Close, Calendar, File: FileI, Attach, Check, ChevDown, Edit } = window.Icons;
+  const [fullForm, setFullForm] = React.useState(false);   // "View full form" toggle
   const r = request;
   const meta = window.DESIGN_STAGE_META[r.stage];
   const urgentMeta = window.URGENCY_META[r.urgency] || {};
@@ -772,7 +774,15 @@ function RequestDetail({ request, onClose, onApprove, onRelease, onRevise, onAss
 
           {r.formData && r.formData.form_type && window.DesignRequestSummary && (
             <Section title={`Form submission — ${r.formData.form_type === 'AC' ? 'AC / HVAC نموذج التكييف' : 'Heating نموذج التدفئة'}`}>
-              <window.DesignRequestSummary form={r.formData} />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+                <button onClick={() => setFullForm(f => !f)} style={{
+                  fontSize: 11, fontWeight: 600, cursor: 'pointer', padding: '3px 10px', borderRadius: 6,
+                  border: '1px solid var(--img-orange)', background: fullForm ? 'var(--img-orange-50, #FFF7EE)' : 'transparent', color: 'var(--img-orange-700, #B8680E)',
+                }}>{fullForm ? '▾ Show summary' : '▸ View full form (all fields)'}</button>
+              </div>
+              {fullForm && window.DesignRequestFullForm
+                ? <window.DesignRequestFullForm form={r.formData} />
+                : <window.DesignRequestSummary form={r.formData} />}
             </Section>
           )}
 
@@ -867,7 +877,23 @@ function RequestDetail({ request, onClose, onApprove, onRelease, onRevise, onAss
                       background: q.status === 'Approved' ? 'var(--img-green-50)'   : q.status === 'Submitted' ? 'var(--stage-closing-bg)'  : 'var(--neutral-100)',
                       color:      q.status === 'Approved' ? 'var(--img-green-700)'  : q.status === 'Submitted' ? 'var(--img-green-700)'     : 'var(--fg-secondary)',
                     }}>{q.status}</span>
+                    <button onClick={() => window.open(`/api/quotation-versions/${q.id}/preview?as=${window.api.userId()}`, '_blank')}
+                      title="Open the full quotation in a big, clear window"
+                      style={{ fontSize: 10.5, fontWeight: 700, padding: '2px 9px', borderRadius: 4, border: '1px solid var(--img-green-700)', background: 'var(--bg-surface)', color: 'var(--img-green-700)', cursor: 'pointer' }}>⤢ Open</button>
+                    <button onClick={() => window.downloadBlob(`/api/quotation-versions/${q.id}/export.xlsm`, `${q.reference || 'quotation'}.xlsm`).catch(err => window.alert(err.message || 'Download failed'))}
+                      title="Download the IMG offer workbook filled with this quotation"
+                      style={{ fontSize: 10.5, fontWeight: 700, padding: '2px 9px', borderRadius: 4, border: '1px solid var(--img-green-700)', background: 'var(--img-green-700)', color: '#fff', cursor: 'pointer' }}>⬇ Excel</button>
+                    <a href={`Quotation.html?requestId=${r.id}&versionId=${q.id}`} target="_blank" rel="noopener"
+                      title="Open this quotation in the editor"
+                      style={{ fontSize: 10.5, fontWeight: 700, padding: '2px 9px', borderRadius: 4, border: '1px solid var(--border-default)', background: 'var(--bg-surface)', color: 'var(--fg-primary)', textDecoration: 'none' }}>✎ Editor</a>
                   </div>
+                  {(q.files || []).filter(x => x && x.stored).length > 0 && (
+                    <div style={{ padding: '4px 8px 6px', display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 11 }}>
+                      {(q.files || []).map((x, i) => x && x.stored ? (
+                        <a key={i} href={`/api/quotation-versions/${q.id}/attachments/${i}?as=${window.api.userId()}`} target="_blank" rel="noopener"
+                          style={{ padding: '2px 8px', borderRadius: 999, background: 'var(--neutral-50)', border: '1px solid var(--border-subtle)', color: 'var(--fg-primary)', textDecoration: 'none' }}>📎 {x.name}</a>) : null)}
+                    </div>
+                  )}
                   {(q.lineItems || []).length > 0 && (
                     <div style={{ padding: '6px 8px', fontSize: 11 }}>
                       <div style={{
